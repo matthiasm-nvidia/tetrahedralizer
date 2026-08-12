@@ -11,6 +11,9 @@ namespace tetrahedralizer
 struct TetrahedralizerParams
 {
     float voxelSpacing = 1.0f;
+    // Morphological close radius in voxels before the exterior flood fill.
+    // 0 skips closing; larger values seal bigger shell holes.
+    int holeCloseRadius = 0;
 };
 
 class Tetrahedralizer

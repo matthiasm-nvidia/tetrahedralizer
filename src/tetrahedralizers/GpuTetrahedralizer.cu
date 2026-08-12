@@ -137,6 +137,10 @@ struct TetDeviceData
     int numVoxels = 0;
     int numNodes = 0;
     int numTets = 0;
+    int gridNumX = 0;
+    int gridNumY = 0;
+    int gridNumZ = 0;
+    int gridNumCells = 0;
     float gridSpacing = 0.0f;
     float invGridSpacing = 0.0f;
     Vec3 worldOrigin;
@@ -148,6 +152,11 @@ struct TetDeviceData
     DeviceBuffer<std::uint64_t> cornerCoords;
     DeviceBuffer<Vec3> nodes;
     DeviceBuffer<int> tetIndices;
+    DeviceBuffer<std::uint32_t> geomCells;
+    DeviceBuffer<std::uint32_t> airCells;
+    DeviceBuffer<std::uint32_t> morphCells;
+    DeviceBuffer<int> anyChanged;
+    DeviceBuffer<int> voxelCounter;
 
     void free()
     {
@@ -158,10 +167,19 @@ struct TetDeviceData
         cornerCoords.free();
         nodes.free();
         tetIndices.free();
+        geomCells.free();
+        airCells.free();
+        morphCells.free();
+        anyChanged.free();
+        voxelCounter.free();
         numTriangles = 0;
         numVoxels = 0;
         numNodes = 0;
         numTets = 0;
+        gridNumX = 0;
+        gridNumY = 0;
+        gridNumZ = 0;
+        gridNumCells = 0;
     }
 };
 
@@ -178,6 +196,25 @@ __device__ int findCoord(const DeviceBuffer<std::uint64_t>& coords, std::uint64_
             last = middle;
     }
     return first < static_cast<int>(coords.size) && coords.buffer[first] == target ? first : -1;
+}
+
+__device__ int cellIndex(const TetDeviceData& data, int x, int y, int z)
+{
+    return (x * data.gridNumY + y) * data.gridNumZ + z;
+}
+
+__device__ bool getCell(const std::uint32_t* cells, const TetDeviceData& data, int x, int y, int z)
+{
+    if (x < 0 || x >= data.gridNumX || y < 0 || y >= data.gridNumY || z < 0 || z >= data.gridNumZ)
+        return false;
+    const int index = cellIndex(data, x, y, z);
+    return (cells[index >> 5] & (1u << (index & 31))) != 0;
+}
+
+__device__ void setCell(std::uint32_t* cells, const TetDeviceData& data, int x, int y, int z)
+{
+    const int index = cellIndex(data, x, y, z);
+    atomicOr(&cells[index >> 5], 1u << (index & 31));
 }
 
 __global__ void createTriangleVoxels(TetDeviceData data, bool countOnly)
@@ -296,6 +333,85 @@ __global__ void createTets(TetDeviceData data)
     }
 }
 
+__global__ void stampGeomCells(TetDeviceData data)
+{
+    CUDA_THREAD_GUARD(voxelIndex, data.numVoxels)
+    int x, y, z;
+    unpackCoords(data.voxels[voxelIndex], x, y, z);
+    setCell(data.geomCells.buffer, data, x, y, z);
+}
+
+// One 6-neighbor dilate step: dst is solid if src or any face neighbor is solid.
+__global__ void dilateGeom(TetDeviceData data, const std::uint32_t* src, std::uint32_t* dst)
+{
+    CUDA_THREAD_GUARD(cellNr, data.gridNumCells)
+    const int x = cellNr / (data.gridNumY * data.gridNumZ);
+    const int y = (cellNr / data.gridNumZ) % data.gridNumY;
+    const int z = cellNr % data.gridNumZ;
+
+    if (getCell(src, data, x, y, z) || getCell(src, data, x - 1, y, z) || getCell(src, data, x + 1, y, z) ||
+        getCell(src, data, x, y - 1, z) || getCell(src, data, x, y + 1, z) || getCell(src, data, x, y, z - 1) ||
+        getCell(src, data, x, y, z + 1))
+        setCell(dst, data, x, y, z);
+}
+
+// One 6-neighbor erode step: dst is solid only if src and all face neighbors are solid.
+// Missing neighbors (grid border) count as empty, so the shell shrinks back from the border.
+__global__ void erodeGeom(TetDeviceData data, const std::uint32_t* src, std::uint32_t* dst)
+{
+    CUDA_THREAD_GUARD(cellNr, data.gridNumCells)
+    const int x = cellNr / (data.gridNumY * data.gridNumZ);
+    const int y = (cellNr / data.gridNumZ) % data.gridNumY;
+    const int z = cellNr % data.gridNumZ;
+
+    if (getCell(src, data, x, y, z) && getCell(src, data, x - 1, y, z) && getCell(src, data, x + 1, y, z) &&
+        getCell(src, data, x, y - 1, z) && getCell(src, data, x, y + 1, z) && getCell(src, data, x, y, z - 1) &&
+        getCell(src, data, x, y, z + 1))
+        setCell(dst, data, x, y, z);
+}
+
+// One Jacobi step of an exterior flood fill: an empty cell becomes air if it is
+// on the grid border or touches an air cell across a face. Repeated until stable,
+// every empty cell reachable from outside is air; the rest is enclosed interior.
+__global__ void floodAir(TetDeviceData data)
+{
+    CUDA_THREAD_GUARD(cellNr, data.gridNumCells)
+    const int x = cellNr / (data.gridNumY * data.gridNumZ);
+    const int y = (cellNr / data.gridNumZ) % data.gridNumY;
+    const int z = cellNr % data.gridNumZ;
+
+    if (getCell(data.geomCells.buffer, data, x, y, z) || getCell(data.airCells.buffer, data, x, y, z))
+        return;
+
+    const bool onBorder = x == 0 || x == data.gridNumX - 1 || y == 0 || y == data.gridNumY - 1 ||
+                          z == 0 || z == data.gridNumZ - 1;
+    if (onBorder ||
+        getCell(data.airCells.buffer, data, x - 1, y, z) || getCell(data.airCells.buffer, data, x + 1, y, z) ||
+        getCell(data.airCells.buffer, data, x, y - 1, z) || getCell(data.airCells.buffer, data, x, y + 1, z) ||
+        getCell(data.airCells.buffer, data, x, y, z - 1) || getCell(data.airCells.buffer, data, x, y, z + 1))
+    {
+        setCell(data.airCells.buffer, data, x, y, z);
+        data.anyChanged[0] = 1;
+    }
+}
+
+// Every cell that is not exterior air is solid (surface or interior). Two passes:
+// countOnly to size the output, then a second pass to write the packed coords.
+__global__ void collectSolidVoxels(TetDeviceData data, bool countOnly)
+{
+    CUDA_THREAD_GUARD(cellNr, data.gridNumCells)
+    const int x = cellNr / (data.gridNumY * data.gridNumZ);
+    const int y = (cellNr / data.gridNumZ) % data.gridNumY;
+    const int z = cellNr % data.gridNumZ;
+
+    if (getCell(data.airCells.buffer, data, x, y, z))
+        return;
+
+    const int outputIndex = atomicAdd(data.voxelCounter.buffer, 1);
+    if (!countOnly)
+        data.voxels[outputIndex] = packCoords(x, y, z);
+}
+
 template <typename T>
 void sortAndUnique(DeviceBuffer<T>& values, int& count)
 {
@@ -321,6 +437,8 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
 {
     if (!(params.voxelSpacing > 0.0f) || !std::isfinite(params.voxelSpacing))
         throw std::invalid_argument("Voxel spacing must be finite and greater than zero");
+    if (params.holeCloseRadius < 0)
+        throw std::invalid_argument("Hole close radius must be non-negative");
     if (mesh_indices.size() / 3 > static_cast<std::size_t>(std::numeric_limits<int>::max()))
         throw std::runtime_error("Triangle count exceeds the supported range");
 
@@ -334,13 +452,29 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
         Bounds3 bounds(Empty);
         for (const Vec3& point : mesh_vertices)
             bounds.include(point);
-        data.worldOrigin = bounds.minimum - Vec3(data.gridSpacing, data.gridSpacing, data.gridSpacing);
 
-        const Vec3 gridDimensions = (bounds.maximum - data.worldOrigin) * data.invGridSpacing + Vec3(2.0f, 2.0f, 2.0f);
+        // Keep an empty air border after morphological close grows the shell by holeCloseRadius.
+        const int borderPad = 1 + params.holeCloseRadius;
+        data.worldOrigin =
+            bounds.minimum - Vec3(data.gridSpacing, data.gridSpacing, data.gridSpacing) * static_cast<float>(borderPad);
+
+        const Vec3 gridDimensions =
+            (bounds.maximum - data.worldOrigin) * data.invGridSpacing +
+            Vec3(static_cast<float>(borderPad + 1), static_cast<float>(borderPad + 1),
+                 static_cast<float>(borderPad + 1));
         if (gridDimensions.x >= static_cast<float>(kCoordMask) ||
             gridDimensions.y >= static_cast<float>(kCoordMask) ||
             gridDimensions.z >= static_cast<float>(kCoordMask))
             throw std::runtime_error("Voxel grid exceeds the supported coordinate range");
+
+        data.gridNumX = static_cast<int>(std::ceil(gridDimensions.x)) + borderPad;
+        data.gridNumY = static_cast<int>(std::ceil(gridDimensions.y)) + borderPad;
+        data.gridNumZ = static_cast<int>(std::ceil(gridDimensions.z)) + borderPad;
+        const long long gridNumCells =
+            static_cast<long long>(data.gridNumX) * data.gridNumY * data.gridNumZ;
+        if (gridNumCells > static_cast<long long>(std::numeric_limits<int>::max()))
+            throw std::runtime_error("Voxel grid exceeds the supported cell count");
+        data.gridNumCells = static_cast<int>(gridNumCells);
 
         data.meshVertices.set(mesh_vertices);
         data.meshIndices.set(mesh_indices);
@@ -362,6 +496,60 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
         CUDA_LAUNCH(createTriangleVoxels, data.numTriangles, data, false);
         data.numVoxels = triangleVoxelCount;
         sortAndUnique(data.voxels, data.numVoxels);
+
+        // Fill the interior: stamp the surface voxels into a dense bit grid, flood the
+        // exterior from the border, then keep every cell that the flood did not reach.
+        const int numWords = data.gridNumCells / 32 + 1;
+        data.geomCells.resize(static_cast<std::size_t>(numWords), false);
+        data.geomCells.setZero();
+        data.airCells.resize(static_cast<std::size_t>(numWords), false);
+        data.airCells.setZero();
+        data.anyChanged.resize(1, false);
+        data.voxelCounter.resize(1, false);
+
+        CUDA_LAUNCH(stampGeomCells, data.numVoxels, data);
+
+        // Close small holes in the surface shell: dilate then erode by holeCloseRadius.
+        if (params.holeCloseRadius > 0)
+        {
+            data.morphCells.resize(static_cast<std::size_t>(numWords), false);
+            for (int step = 0; step < params.holeCloseRadius; ++step)
+            {
+                data.morphCells.setZero();
+                CUDA_LAUNCH(dilateGeom, data.gridNumCells, data, data.geomCells.buffer, data.morphCells.buffer);
+                data.geomCells.swap(data.morphCells);
+            }
+            for (int step = 0; step < params.holeCloseRadius; ++step)
+            {
+                data.morphCells.setZero();
+                CUDA_LAUNCH(erodeGeom, data.gridNumCells, data, data.geomCells.buffer, data.morphCells.buffer);
+                data.geomCells.swap(data.morphCells);
+            }
+            data.morphCells.free();
+        }
+
+        const int maxIters = data.gridNumX + data.gridNumY + data.gridNumZ;
+        for (int iter = 0; iter < maxIters; ++iter)
+        {
+            data.anyChanged.setZero();
+            CUDA_LAUNCH(floodAir, data.gridNumCells, data);
+            if (readDeviceInt(data.anyChanged, 0) == 0)
+                break;
+        }
+
+        data.voxelCounter.setZero();
+        CUDA_LAUNCH(collectSolidVoxels, data.gridNumCells, data, true);
+        const int solidVoxelCount = readDeviceInt(data.voxelCounter, 0);
+        if (solidVoxelCount <= 0)
+        {
+            data.free();
+            return;
+        }
+
+        data.voxels.resize(static_cast<std::size_t>(solidVoxelCount), false);
+        data.voxelCounter.setZero();
+        CUDA_LAUNCH(collectSolidVoxels, data.gridNumCells, data, false);
+        data.numVoxels = solidVoxelCount;
 
         if (data.numVoxels > std::numeric_limits<int>::max() / 8)
             throw std::runtime_error("Voxel corner count exceeds the supported range");
