@@ -8,6 +8,11 @@
 namespace tetrahedralizer
 {
 
+struct TetrahedralizerParams
+{
+    float voxelSpacing = 1.0f;
+};
+
 class Tetrahedralizer
 {
 public:
@@ -17,7 +22,8 @@ public:
     std::vector<int> tet_indices;
 
     void clear();
-    void create(const std::vector<Vec3>& mesh_vertices, const std::vector<std::uint32_t>& mesh_indices);
+    void create(const std::vector<Vec3>& mesh_vertices, const std::vector<std::uint32_t>& mesh_indices,
+                const TetrahedralizerParams& params = {});
 
     bool empty() const
     {

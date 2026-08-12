@@ -12,6 +12,7 @@
 
 #include "tetrahedralizer/Vec.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cuda.h>
 #include <cuda_runtime_api.h>
@@ -22,6 +23,12 @@
 
 #define THREADS_PER_BLOCK 256
 #define CUDA_UTILS_DEBUG 0
+
+#ifdef __CUDACC__
+#define CUDA_CALLABLE __host__ __device__
+#else
+#define CUDA_CALLABLE
+#endif
 
 #define CUDA_LINEAR_THREAD_IDX (threadIdx.x + blockIdx.x * blockDim.x)
 

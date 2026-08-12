@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <string>
 #include <utility>
@@ -29,6 +30,7 @@ struct AppState
     tetrahedralizer::Camera camera;
     tetrahedralizer::Vec3 orbit_center{0.0f, 0.0f, 0.0f};
     float scene_scale = 1.0f;
+    float voxel_spacing = 0.1f;
     int mouse_x = 0;
     int mouse_y = 0;
 };
@@ -48,6 +50,24 @@ bool imguiWantsMouse()
     return ImGui::GetCurrentContext() != nullptr && ImGui::GetIO().WantCaptureMouse;
 }
 
+void createTets(const tetrahedralizer::TriMesh& mesh, float voxel_spacing,
+                tetrahedralizer::Tetrahedralizer& tets, tetrahedralizer::TetMeshRenderer& tet_renderer)
+{
+    try
+    {
+        tetrahedralizer::TetrahedralizerParams params;
+        params.voxelSpacing = voxel_spacing;
+        tets.create(mesh.positions, mesh.triangle_indices, params);
+        tet_renderer.upload(tets.nodes, tets.tet_indices);
+    }
+    catch (const std::exception& error)
+    {
+        tets.clear();
+        tet_renderer.clear();
+        FileDialog::showError("Tetrahedralization Failed", error.what());
+    }
+}
+
 bool loadMesh(GLFWwindow* window, const std::string& path, AppState& state, tetrahedralizer::TriMesh& mesh,
               tetrahedralizer::TriMeshRenderer& tri_renderer, tetrahedralizer::Tetrahedralizer& tets,
               tetrahedralizer::TetMeshRenderer& tet_renderer)
@@ -62,8 +82,8 @@ bool loadMesh(GLFWwindow* window, const std::string& path, AppState& state, tetr
     mesh = std::move(loaded_mesh);
     tri_renderer.upload(mesh.positions, mesh.triangle_indices);
 
-    tets.create(mesh.positions, mesh.triangle_indices);
-    tet_renderer.upload(tets.nodes, tets.tet_indices);
+    tets.clear();
+    tet_renderer.clear();
 
     const tetrahedralizer::Bounds3 bounds = mesh.bounds();
     tetrahedralizer::frameCamera(state.camera, state.orbit_center, bounds);
@@ -197,6 +217,17 @@ int main()
         return 1;
     }
 
+    if (GLFWmonitor* monitor = glfwGetPrimaryMonitor())
+    {
+        if (const GLFWvidmode* mode = glfwGetVideoMode(monitor))
+        {
+            int window_width = 0;
+            int window_height = 0;
+            glfwGetWindowSize(window, &window_width, &window_height);
+            glfwSetWindowPos(window, (mode->width - window_width) / 2, (mode->height - window_height) / 2);
+        }
+    }
+
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
     if (!tetrahedralizer::glLoad())
@@ -250,36 +281,31 @@ int main()
             tet_renderer.render();
 
         ImGui_ImplGLFW_NewFrame();
-        ImGui::SetNextWindowSize(ImVec2(320.0f, 300.0f), ImGuiSetCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(320.0f, 600.0f), ImGuiSetCond_FirstUseEver);
         ImGui::Begin("Controls");
         const float spacing = ImGui::GetStyle().ItemSpacing.x;
         const float half_width = (ImGui::GetContentRegionAvail().x - spacing) * 0.5f;
         if (viewer::imgui_widgets::button("Load OBJ", half_width))
             promptLoadMesh(window, state, mesh, tri_renderer, tets, tet_renderer);
         ImGui::SameLine();
-        if (viewer::imgui_widgets::button("Last", half_width))
+        if (viewer::imgui_widgets::button("Load last", half_width))
             loadLastMesh(window, state, mesh, tri_renderer, tets, tet_renderer);
 
         if (!mesh.empty())
         {
             viewer::imgui_widgets::section_separator();
             viewer::imgui_widgets::section_heading("Mesh");
-            ImGui::Text("%llu vertices", static_cast<unsigned long long>(mesh.positions.size()));
-            ImGui::Text("%llu triangles",
-                        static_cast<unsigned long long>(mesh.triangle_indices.size() / 3));
             viewer::imgui_widgets::checkbox("Show mesh", &show_mesh);
             viewer::imgui_widgets::checkbox("Wireframe", &wireframe);
 
             viewer::imgui_widgets::section_separator();
             viewer::imgui_widgets::section_heading("Tets");
-            ImGui::Text("%llu nodes", static_cast<unsigned long long>(tets.nodes.size()));
-            ImGui::Text("%d tets", tets.numTets());
+            viewer::imgui_widgets::slider_float("Voxel size", &state.voxel_spacing, 0.01f, 0.1f);
+            if (viewer::imgui_widgets::button_full_width("Create tets"))
+                createTets(mesh, state.voxel_spacing, tets, tet_renderer);
             viewer::imgui_widgets::checkbox("Show tets", &show_tets);
         }
 
-        viewer::imgui_widgets::section_separator();
-        ImGui::TextWrapped("Left drag: orbit | Right drag: look");
-        ImGui::TextWrapped("Middle drag: pan | Wheel/WASDQE: move");
         ImGui::End();
         ImGui::Render();
         ImGui_ImplGLFW_RenderDrawData(ImGui::GetDrawData());
