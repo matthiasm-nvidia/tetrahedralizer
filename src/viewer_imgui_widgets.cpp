@@ -233,8 +233,10 @@ bool slider_float(const char* label, float* value, float min_value, float max_va
 bool slider_int(const char* label, int* value, int min_value, int max_value, const char* display_format)
 {
     ImGui::PushID(label);
-    plain_label(label);
     push_slider_style();
+    ImGui::AlignTextToFramePadding();
+    plain_label(label);
+    ImGui::SameLine();
 
     ImGui::PushItemWidth(-1.0f);
     const bool changed = ImGui::SliderInt("##slider", value, min_value, max_value, display_format);

@@ -29,11 +29,49 @@ struct AppState
 {
     tetrahedralizer::Camera camera;
     tetrahedralizer::Vec3 orbit_center{0.0f, 0.0f, 0.0f};
+    tetrahedralizer::Bounds3 mesh_bounds;
     float scene_scale = 1.0f;
     float voxel_spacing = 0.1f;
+    // Percentage of the mesh bounds cut away along each axis, 0 disables the clip plane.
+    int clip[3] = {0, 0, 0};
     int mouse_x = 0;
     int mouse_y = 0;
 };
+
+// World space upper bound per axis, MaxFloat where the axis is not clipped.
+tetrahedralizer::Vec3 clipLimits(const AppState& state)
+{
+    const tetrahedralizer::Vec3 dimensions = state.mesh_bounds.getDimensions();
+    tetrahedralizer::Vec3 limits(tetrahedralizer::MaxFloat, tetrahedralizer::MaxFloat, tetrahedralizer::MaxFloat);
+    for (unsigned int axis = 0; axis < 3; ++axis)
+    {
+        if (state.clip[axis] > 0)
+            limits[axis] = state.mesh_bounds.minimum[axis] +
+                           dimensions[axis] * (1.0f - static_cast<float>(state.clip[axis]) * 0.01f);
+    }
+    return limits;
+}
+
+void applyClipPlanes(const tetrahedralizer::Vec3& limits)
+{
+    for (unsigned int axis = 0; axis < 3; ++axis)
+    {
+        if (limits[axis] == tetrahedralizer::MaxFloat)
+            continue;
+
+        GLdouble equation[4] = {0.0, 0.0, 0.0, static_cast<GLdouble>(limits[axis])};
+        equation[axis] = -1.0;
+        glEnable(GL_CLIP_PLANE0 + axis);
+        glClipPlane(GL_CLIP_PLANE0 + axis, equation);
+    }
+}
+
+void disableClipPlanes()
+{
+    glDisable(GL_CLIP_PLANE0);
+    glDisable(GL_CLIP_PLANE1);
+    glDisable(GL_CLIP_PLANE2);
+}
 
 AppState* appState(GLFWwindow* window)
 {
@@ -86,6 +124,7 @@ bool loadMesh(GLFWwindow* window, const std::string& path, AppState& state, tetr
     tet_renderer.clear();
 
     const tetrahedralizer::Bounds3 bounds = mesh.bounds();
+    state.mesh_bounds = bounds;
     tetrahedralizer::frameCamera(state.camera, state.orbit_center, bounds);
     const float diagonal = bounds.getDimensions().length();
     state.scene_scale = diagonal > 0.0f ? diagonal : 1.0f;
@@ -256,6 +295,8 @@ int main()
     bool show_mesh = true;
     bool show_tets = true;
     bool wireframe = false;
+    bool tet_wireframe = false;
+    float tet_scale = 0.85f;
 
     while (!glfwWindowShouldClose(window))
     {
@@ -275,10 +316,18 @@ int main()
         glMatrixMode(GL_MODELVIEW);
         glLoadIdentity();
         state.camera.applyView();
+
+        const tetrahedralizer::Vec3 clip = clipLimits(state);
+        applyClipPlanes(clip);
         if (show_mesh)
             tri_renderer.render(wireframe);
+        disableClipPlanes();
+
         if (show_tets)
-            tet_renderer.render();
+        {
+            tet_renderer.setClip(clip);
+            tet_renderer.render(tet_wireframe, tet_scale);
+        }
 
         ImGui_ImplGLFW_NewFrame();
         ImGui::SetNextWindowSize(ImVec2(320.0f, 600.0f), ImGuiSetCond_FirstUseEver);
@@ -304,6 +353,14 @@ int main()
             if (viewer::imgui_widgets::button_full_width("Create tets"))
                 createTets(mesh, state.voxel_spacing, tets, tet_renderer);
             viewer::imgui_widgets::checkbox("Show tets", &show_tets);
+            viewer::imgui_widgets::checkbox("Tet wireframe", &tet_wireframe);
+            if (!tet_wireframe)
+                viewer::imgui_widgets::slider_float("Tet scale", &tet_scale, 0.5f, 1.0f);
+
+            viewer::imgui_widgets::section_separator();
+            viewer::imgui_widgets::slider_int("Clip X", &state.clip[0], 0, 100);
+            viewer::imgui_widgets::slider_int("Clip Y", &state.clip[1], 0, 100);
+            viewer::imgui_widgets::slider_int("Clip Z", &state.clip[2], 0, 100);
         }
 
         ImGui::End();

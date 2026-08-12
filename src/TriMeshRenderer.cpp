@@ -20,7 +20,9 @@ varying vec3 vPositionEye;
 
 void main()
 {
-    vPositionEye = vec3(gl_ModelViewMatrix * vec4(gl_Vertex.xyz, 1.0));
+    vec4 positionEye = gl_ModelViewMatrix * vec4(gl_Vertex.xyz, 1.0);
+    vPositionEye = positionEye.xyz;
+    gl_ClipVertex = positionEye;
     gl_Position = gl_ModelViewProjectionMatrix * vec4(gl_Vertex.xyz, 1.0);
 }
 )";
