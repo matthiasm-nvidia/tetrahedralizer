@@ -26,6 +26,8 @@ add_executable(tetrahedralizer
     src/GlCore.cpp
     src/TriMesh.cpp
     src/TriMeshRenderer.cpp
+    src/Tetrahedralizer.cpp
+    src/TetMeshRenderer.cpp
     src/Camera.cpp
     src/LastPath.cpp
     src/viewer_imgui_theme.cpp

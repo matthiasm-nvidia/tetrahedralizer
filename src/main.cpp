@@ -13,6 +13,8 @@
 #include "tetrahedralizer/Camera.h"
 #include "tetrahedralizer/GlCore.h"
 #include "tetrahedralizer/LastPath.h"
+#include "tetrahedralizer/TetMeshRenderer.h"
+#include "tetrahedralizer/Tetrahedralizer.h"
 #include "tetrahedralizer/TriMesh.h"
 #include "tetrahedralizer/TriMeshRenderer.h"
 #include "viewer_imgui_theme.h"
@@ -46,8 +48,9 @@ bool imguiWantsMouse()
     return ImGui::GetCurrentContext() != nullptr && ImGui::GetIO().WantCaptureMouse;
 }
 
-bool loadMesh(GLFWwindow* window, const std::string& path, AppState& state,
-              tetrahedralizer::TriMesh& mesh, tetrahedralizer::TriMeshRenderer& renderer)
+bool loadMesh(GLFWwindow* window, const std::string& path, AppState& state, tetrahedralizer::TriMesh& mesh,
+              tetrahedralizer::TriMeshRenderer& tri_renderer, tetrahedralizer::Tetrahedralizer& tets,
+              tetrahedralizer::TetMeshRenderer& tet_renderer)
 {
     if (!std::filesystem::exists(path))
         return false;
@@ -57,7 +60,10 @@ bool loadMesh(GLFWwindow* window, const std::string& path, AppState& state,
         return false;
 
     mesh = std::move(loaded_mesh);
-    renderer.upload(mesh.positions, mesh.triangle_indices);
+    tri_renderer.upload(mesh.positions, mesh.triangle_indices);
+
+    tets.create(mesh.positions, mesh.triangle_indices);
+    tet_renderer.upload(tets.nodes, tets.tet_indices);
 
     const tetrahedralizer::Bounds3 bounds = mesh.bounds();
     tetrahedralizer::frameCamera(state.camera, state.orbit_center, bounds);
@@ -71,19 +77,23 @@ bool loadMesh(GLFWwindow* window, const std::string& path, AppState& state,
 }
 
 void promptLoadMesh(GLFWwindow* window, AppState& state, tetrahedralizer::TriMesh& mesh,
-                    tetrahedralizer::TriMeshRenderer& renderer)
+                    tetrahedralizer::TriMeshRenderer& tri_renderer, tetrahedralizer::Tetrahedralizer& tets,
+                    tetrahedralizer::TetMeshRenderer& tet_renderer)
 {
     std::string path;
-    if (FileDialog::getFileName(path, true) && !loadMesh(window, path, state, mesh, renderer))
+    if (FileDialog::getFileName(path, true) &&
+        !loadMesh(window, path, state, mesh, tri_renderer, tets, tet_renderer))
         FileDialog::showError("Load Failed", "Failed to load OBJ mesh.");
 }
 
 void loadLastMesh(GLFWwindow* window, AppState& state, tetrahedralizer::TriMesh& mesh,
-                  tetrahedralizer::TriMeshRenderer& renderer)
+                  tetrahedralizer::TriMeshRenderer& tri_renderer, tetrahedralizer::Tetrahedralizer& tets,
+                  tetrahedralizer::TetMeshRenderer& tet_renderer)
 {
     std::string path;
-    if (!tetrahedralizer::readLastPath(path) || !loadMesh(window, path, state, mesh, renderer))
-        promptLoadMesh(window, state, mesh, renderer);
+    if (!tetrahedralizer::readLastPath(path) ||
+        !loadMesh(window, path, state, mesh, tri_renderer, tets, tet_renderer))
+        promptLoadMesh(window, state, mesh, tri_renderer, tets, tet_renderer);
 }
 
 void onKey(GLFWwindow* window, int key, int scancode, int action, int mods)
@@ -209,8 +219,11 @@ int main()
     installCallbacks(window, &state);
 
     tetrahedralizer::TriMesh mesh;
-    tetrahedralizer::TriMeshRenderer renderer;
+    tetrahedralizer::TriMeshRenderer tri_renderer;
+    tetrahedralizer::Tetrahedralizer tets;
+    tetrahedralizer::TetMeshRenderer tet_renderer;
     bool show_mesh = true;
+    bool show_tets = true;
     bool wireframe = false;
 
     while (!glfwWindowShouldClose(window))
@@ -232,7 +245,9 @@ int main()
         glLoadIdentity();
         state.camera.applyView();
         if (show_mesh)
-            renderer.render(wireframe);
+            tri_renderer.render(wireframe);
+        if (show_tets)
+            tet_renderer.render();
 
         ImGui_ImplGLFW_NewFrame();
         ImGui::SetNextWindowSize(ImVec2(320.0f, 300.0f), ImGuiSetCond_FirstUseEver);
@@ -240,10 +255,10 @@ int main()
         const float spacing = ImGui::GetStyle().ItemSpacing.x;
         const float half_width = (ImGui::GetContentRegionAvail().x - spacing) * 0.5f;
         if (viewer::imgui_widgets::button("Load OBJ", half_width))
-            promptLoadMesh(window, state, mesh, renderer);
+            promptLoadMesh(window, state, mesh, tri_renderer, tets, tet_renderer);
         ImGui::SameLine();
         if (viewer::imgui_widgets::button("Last", half_width))
-            loadLastMesh(window, state, mesh, renderer);
+            loadLastMesh(window, state, mesh, tri_renderer, tets, tet_renderer);
 
         if (!mesh.empty())
         {
@@ -254,6 +269,12 @@ int main()
                         static_cast<unsigned long long>(mesh.triangle_indices.size() / 3));
             viewer::imgui_widgets::checkbox("Show mesh", &show_mesh);
             viewer::imgui_widgets::checkbox("Wireframe", &wireframe);
+
+            viewer::imgui_widgets::section_separator();
+            viewer::imgui_widgets::section_heading("Tets");
+            ImGui::Text("%llu nodes", static_cast<unsigned long long>(tets.nodes.size()));
+            ImGui::Text("%d tets", tets.numTets());
+            viewer::imgui_widgets::checkbox("Show tets", &show_tets);
         }
 
         viewer::imgui_widgets::section_separator();
@@ -266,7 +287,8 @@ int main()
         glfwSwapBuffers(window);
     }
 
-    renderer.clear();
+    tri_renderer.clear();
+    tet_renderer.clear();
     ImGui_ImplGLFW_Shutdown();
     ImGui::DestroyContext(imgui_context);
     glfwDestroyWindow(window);

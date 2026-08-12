@@ -134,7 +134,7 @@ bool load_ui_font(GLFWwindow* window)
     }
     if (g_font_path.empty())
     {
-        std::fprintf(stderr, "reconstructor: UI font not found (expected resources/fonts/NotoSans-Regular.ttf)\n");
+        std::fprintf(stderr, "tetrahedralizer: UI font not found (expected resources/fonts/NotoSans-Regular.ttf)\n");
         return false;
     }
 
@@ -146,7 +146,7 @@ bool load_ui_font(GLFWwindow* window)
     ImFont* font = io.Fonts->AddFontFromFileTTF(g_font_path.c_str(), font_size);
     if (font == nullptr)
     {
-        std::fprintf(stderr, "reconstructor: failed to load UI font from %s\n", g_font_path.c_str());
+        std::fprintf(stderr, "tetrahedralizer: failed to load UI font from %s\n", g_font_path.c_str());
         g_font_path.clear();
         return false;
     }
@@ -158,7 +158,7 @@ bool load_ui_font(GLFWwindow* window)
         if (g_bold_font == nullptr)
         {
             std::fprintf(
-                stderr, "reconstructor: failed to load bold UI font from %s\n", bold_font_path.string().c_str());
+                stderr, "tetrahedralizer: failed to load bold UI font from %s\n", bold_font_path.string().c_str());
         }
     }
 
@@ -169,7 +169,7 @@ bool load_ui_font(GLFWwindow* window)
     }
 #endif
 
-    std::fprintf(stdout, "reconstructor: loaded UI font %s (size=%.1f, dpiScale=%.2f)\n", g_font_path.c_str(),
+    std::fprintf(stdout, "tetrahedralizer: loaded UI font %s (size=%.1f, dpiScale=%.2f)\n", g_font_path.c_str(),
                  font_size, dpi_scale);
     return true;
 }

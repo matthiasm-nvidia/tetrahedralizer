@@ -44,6 +44,7 @@ constexpr unsigned int kFragmentShader = 0x8B30;
 constexpr unsigned int kVertexShader = 0x8B31;
 constexpr unsigned int kLinkStatus = 0x8B82;
 constexpr unsigned int kPoints = 0x0000;
+constexpr unsigned int kLines = 0x0001;
 constexpr unsigned int kTriangles = 0x0004;
 constexpr unsigned int kFloat = 0x1406;
 constexpr unsigned int kUnsignedInt = 0x1405;
