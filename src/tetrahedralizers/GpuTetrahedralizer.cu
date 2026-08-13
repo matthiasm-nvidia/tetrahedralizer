@@ -2,6 +2,8 @@
 
 #include "tetrahedralizer/Tetrahedralizer.h"
 #include "utils/CudaUtils.h"
+#include "utils/Geometry.h"
+#include "utils/GpuBVH.h"
 
 #include <algorithm>
 #include <cmath>
@@ -42,6 +44,10 @@ __device__ __constant__ int kTetCorners[2][5][4] = {
         {2, 5, 7, 6},
         {0, 2, 5, 7},
     },
+};
+
+__device__ __constant__ int kTetEdges[6][2] = {
+    {0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3},
 };
 
 struct DeviceVec3
@@ -137,6 +143,7 @@ struct TetDeviceData
     int numVoxels = 0;
     int numNodes = 0;
     int numTets = 0;
+    int numEdges = 0;
     int gridNumX = 0;
     int gridNumY = 0;
     int gridNumZ = 0;
@@ -152,6 +159,12 @@ struct TetDeviceData
     DeviceBuffer<std::uint64_t> cornerCoords;
     DeviceBuffer<Vec3> nodes;
     DeviceBuffer<int> tetIndices;
+    DeviceBuffer<std::uint64_t> edges;
+    DeviceBuffer<int> firstCutVertex;
+    DeviceBuffer<int> edgeCutVertices;
+    DeviceBuffer<Vec4> triangleBoundsLowers;
+    DeviceBuffer<Vec4> triangleBoundsUppers;
+    GpuBVH triangleBvh;
     DeviceBuffer<std::uint32_t> geomCells;
     DeviceBuffer<std::uint32_t> airCells;
     DeviceBuffer<std::uint32_t> morphCells;
@@ -167,6 +180,12 @@ struct TetDeviceData
         cornerCoords.free();
         nodes.free();
         tetIndices.free();
+        edges.free();
+        firstCutVertex.free();
+        edgeCutVertices.free();
+        triangleBoundsLowers.free();
+        triangleBoundsUppers.free();
+        triangleBvh.free();
         geomCells.free();
         airCells.free();
         morphCells.free();
@@ -176,6 +195,7 @@ struct TetDeviceData
         numVoxels = 0;
         numNodes = 0;
         numTets = 0;
+        numEdges = 0;
         gridNumX = 0;
         gridNumY = 0;
         gridNumZ = 0;
@@ -331,6 +351,124 @@ __global__ void createTets(TetDeviceData data)
         for (int corner = 0; corner < 4; ++corner)
             data.tetIndices[outputIndex + corner] = ids[corner];
     }
+}
+
+__host__ __device__ std::uint64_t packEdge(int id0, int id1)
+{
+    const std::uint32_t lower = static_cast<std::uint32_t>(id0 < id1 ? id0 : id1);
+    const std::uint32_t upper = static_cast<std::uint32_t>(id0 < id1 ? id1 : id0);
+    return (static_cast<std::uint64_t>(lower) << 32) | upper;
+}
+
+__global__ void createTetEdges(TetDeviceData data)
+{
+    CUDA_THREAD_GUARD(index, data.numTets * 6)
+    const int tetIndex = index / 6;
+    const int edgeIndex = index % 6;
+    const int id0 = data.tetIndices[4 * tetIndex + kTetEdges[edgeIndex][0]];
+    const int id1 = data.tetIndices[4 * tetIndex + kTetEdges[edgeIndex][1]];
+    data.edges[index] = packEdge(id0, id1);
+}
+
+__global__ void computeTriangleBounds(TetDeviceData data)
+{
+    CUDA_THREAD_GUARD(triangleIndex, data.numTriangles)
+    const std::uint32_t i0 = data.meshIndices[3 * triangleIndex + 0];
+    const std::uint32_t i1 = data.meshIndices[3 * triangleIndex + 1];
+    const std::uint32_t i2 = data.meshIndices[3 * triangleIndex + 2];
+
+    if (i0 >= data.meshVertices.size || i1 >= data.meshVertices.size || i2 >= data.meshVertices.size)
+    {
+        data.triangleBoundsLowers[triangleIndex] = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        data.triangleBoundsUppers[triangleIndex] = Vec4(0.0f, 0.0f, 0.0f, 0.0f);
+        return;
+    }
+
+    const Vec3 p0 = data.meshVertices[i0];
+    const Vec3 p1 = data.meshVertices[i1];
+    const Vec3 p2 = data.meshVertices[i2];
+    data.triangleBoundsLowers[triangleIndex] =
+        Vec4(min3(p0.x, p1.x, p2.x), min3(p0.y, p1.y, p2.y), min3(p0.z, p1.z, p2.z), 0.0f);
+    data.triangleBoundsUppers[triangleIndex] =
+        Vec4(max3(p0.x, p1.x, p2.x), max3(p0.y, p1.y, p2.y), max3(p0.z, p1.z, p2.z), 0.0f);
+}
+
+// Walks the input mesh BVH and keeps the first cut along the edge, so an edge gets at most one cut.
+__device__ bool findEdgeCut(TetDeviceData& data, const Vec3& p0, const Vec3& p1, float& cutT)
+{
+    const Ray ray(p0, p1 - p0);
+    int stack[64];
+    stack[0] = data.triangleBvh.mRootNodes[0];
+    int count = 1;
+    bool found = false;
+    cutT = MaxFloat;
+
+    while (count > 0)
+    {
+        const int nodeIndex = stack[--count];
+        const PackedNodeHalf lower = data.triangleBvh.mNodeLowers[nodeIndex];
+        const PackedNodeHalf upper = data.triangleBvh.mNodeUppers[nodeIndex];
+        const Bounds3 bounds(Vec3(lower.x, lower.y, lower.z), Vec3(upper.x, upper.y, upper.z));
+
+        float entry;
+        float exit;
+        if (!header_rayBoundsIntersection(ray, bounds, &entry, &exit) || exit < 0.0f || entry > 1.0f)
+            continue;
+
+        if (lower.b)
+        {
+            const int triangleIndex = static_cast<int>(lower.i);
+            const std::uint32_t i0 = data.meshIndices[3 * triangleIndex + 0];
+            const std::uint32_t i1 = data.meshIndices[3 * triangleIndex + 1];
+            const std::uint32_t i2 = data.meshIndices[3 * triangleIndex + 2];
+            if (i0 >= data.meshVertices.size || i1 >= data.meshVertices.size || i2 >= data.meshVertices.size)
+                continue;
+
+            float t;
+            float u;
+            float v;
+            if (header_rayTriangleIntersection(
+                    ray, data.meshVertices[i0], data.meshVertices[i1], data.meshVertices[i2], t, u, v) &&
+                t > 1.0e-6f && t < 1.0f - 1.0e-6f && t < cutT)
+            {
+                cutT = t;
+                found = true;
+            }
+        }
+        else if (count <= 62)
+        {
+            stack[count++] = static_cast<int>(lower.i);
+            stack[count++] = static_cast<int>(upper.i);
+        }
+    }
+
+    return found;
+}
+
+__global__ void createCutVertices(TetDeviceData data, int originalNodeCount, bool countOnly)
+{
+    CUDA_THREAD_GUARD(edgeIndex, data.numEdges)
+    const std::uint64_t edge = data.edges[edgeIndex];
+    const int id0 = static_cast<int>(edge >> 32);
+    const int id1 = static_cast<int>(edge & 0xffffffffu);
+
+    float cutT;
+    const bool cut = findEdgeCut(data, data.nodes[id0], data.nodes[id1], cutT);
+    if (countOnly)
+    {
+        data.firstCutVertex[edgeIndex] = cut ? 1 : 0;
+        return;
+    }
+
+    if (!cut)
+    {
+        data.edgeCutVertices[edgeIndex] = -1;
+        return;
+    }
+
+    const int vertexId = originalNodeCount + data.firstCutVertex[edgeIndex];
+    data.nodes[vertexId] = data.nodes[id0] + (data.nodes[id1] - data.nodes[id0]) * cutT;
+    data.edgeCutVertices[edgeIndex] = vertexId;
 }
 
 __global__ void stampGeomCells(TetDeviceData data)
@@ -568,6 +706,45 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
         data.numTets = data.numVoxels * 5;
         data.tetIndices.resize(static_cast<std::size_t>(data.numTets) * 4, false);
         CUDA_LAUNCH(createTets, data.numVoxels, data);
+
+        if (params.cutWithInputMesh)
+        {
+            if (data.numTets > std::numeric_limits<int>::max() / 6)
+                throw std::runtime_error("Tet edge count exceeds the supported range");
+
+            int edgeCount = data.numTets * 6;
+            data.edges.resize(static_cast<std::size_t>(edgeCount), false);
+            CUDA_LAUNCH(createTetEdges, edgeCount, data);
+            sortAndUnique(data.edges, edgeCount);
+            data.numEdges = edgeCount;
+
+            data.triangleBoundsLowers.resize(static_cast<std::size_t>(data.numTriangles), false);
+            data.triangleBoundsUppers.resize(static_cast<std::size_t>(data.numTriangles), false);
+            CUDA_LAUNCH(computeTriangleBounds, data.numTriangles, data);
+
+            BVHBuilderGPU bvhBuilder;
+            bvhBuilder.build(data.triangleBvh, data.triangleBoundsLowers.buffer, data.triangleBoundsUppers.buffer,
+                             data.numTriangles);
+
+            data.firstCutVertex.resize(static_cast<std::size_t>(data.numEdges + 1), false);
+            data.firstCutVertex.setZero();
+            CUDA_LAUNCH(createCutVertices, data.numEdges, data, data.numNodes, true);
+            thrust::device_ptr<int> firstCutVertex(data.firstCutVertex.buffer);
+            thrust::exclusive_scan(firstCutVertex, firstCutVertex + data.numEdges + 1, firstCutVertex);
+
+            const int numCutVertices = readDeviceInt(data.firstCutVertex, data.numEdges);
+            data.edgeCutVertices.resize(static_cast<std::size_t>(data.numEdges), false);
+            const int originalNodeCount = data.numNodes;
+            if (numCutVertices > 0)
+            {
+                if (numCutVertices > std::numeric_limits<int>::max() - originalNodeCount)
+                    throw std::runtime_error("Cut vertex count exceeds the supported range");
+                data.nodes.resize(static_cast<std::size_t>(originalNodeCount + numCutVertices), true);
+                data.numNodes += numCutVertices;
+            }
+            CUDA_LAUNCH(createCutVertices, data.numEdges, data, originalNodeCount, false);
+        }
+
         cudaCheck(cudaDeviceSynchronize());
 
         data.nodes.get(output.nodes);

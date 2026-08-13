@@ -10,8 +10,9 @@
 
 #pragma once
 
-#include "utils/Math.h"
 #include "utils/CudaUtils.h"
+#include "utils/GpuBVH.h"
+#include "utils/Math.h"
 #include "tetrahedralizer/Vec.h"
 
 namespace tetrahedralizer

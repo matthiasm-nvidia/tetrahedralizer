@@ -32,6 +32,7 @@ if(TETRAHEDRALIZER_ENABLE_CUDA)
         find_package(CUDAToolkit REQUIRED)
         set(TETRAHEDRALIZER_CUDA_SOURCES
             src/utils/CudaUtils.cpp
+            src/utils/GpuBVH.cu
             src/tetrahedralizers/GpuTetrahedralizer.cu
         )
         set(TETRAHEDRALIZER_CUDA_LIBS CUDA::cudart)

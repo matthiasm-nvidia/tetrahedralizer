@@ -14,6 +14,11 @@ The point clouds are very noisy.
 - Always try to implement a feature in a simple way. I like simplicity
 - Do only implement what is asked for. 
 - Use the macros from CudaUtils.h and the DeviceBuffer object when possible when writing cuda code 
+- Always ask when changing Vec.h or the files in the utils folder
+
+## Building
+
+- Build with `build.bat` in the repo root. It locates Visual Studio, sets up the environment, and builds both Debug and Release. Do not invoke `cmake --build` directly from a plain shell, as the MSVC/CUDA compiler environment will not be set up.
 
 ## Tests
 

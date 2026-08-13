@@ -33,6 +33,7 @@ struct AppState
     float scene_scale = 1.0f;
     float voxel_spacing = 0.1f;
     int hole_close_radius = 0;
+    bool cut_with_input_mesh = false;
     // Percentage of the mesh bounds cut away along each axis, 0 disables the clip plane.
     int clip[3] = {0, 0, 0};
     int mouse_x = 0;
@@ -43,7 +44,7 @@ struct AppState
 tetrahedralizer::Vec3 clipLimits(const AppState& state)
 {
     const tetrahedralizer::Vec3 dimensions = state.mesh_bounds.getDimensions();
-    tetrahedralizer::Vec3 limits(tetrahedralizer::MaxFloat, tetrahedralizer::MaxFloat, tetrahedralizer::MaxFloat);
+    tetrahedralizer::Vec3 limits(MaxFloat, MaxFloat, MaxFloat);
     for (unsigned int axis = 0; axis < 3; ++axis)
     {
         if (state.clip[axis] > 0)
@@ -57,7 +58,7 @@ void applyClipPlanes(const tetrahedralizer::Vec3& limits)
 {
     for (unsigned int axis = 0; axis < 3; ++axis)
     {
-        if (limits[axis] == tetrahedralizer::MaxFloat)
+        if (limits[axis] == MaxFloat)
             continue;
 
         GLdouble equation[4] = {0.0, 0.0, 0.0, static_cast<GLdouble>(limits[axis])};
@@ -90,13 +91,15 @@ bool imguiWantsMouse()
 }
 
 void createTets(const tetrahedralizer::TriMesh& mesh, float voxel_spacing, int hole_close_radius,
-                tetrahedralizer::Tetrahedralizer& tets, tetrahedralizer::TetMeshRenderer& tet_renderer)
+                bool cut_with_input_mesh, tetrahedralizer::Tetrahedralizer& tets,
+                tetrahedralizer::TetMeshRenderer& tet_renderer)
 {
     try
     {
         tetrahedralizer::TetrahedralizerParams params;
         params.voxelSpacing = voxel_spacing;
         params.holeCloseRadius = hole_close_radius;
+        params.cutWithInputMesh = cut_with_input_mesh;
         tets.create(mesh.positions, mesh.triangle_indices, params);
         tet_renderer.upload(tets.nodes, tets.tet_indices);
     }
@@ -353,8 +356,10 @@ int main()
             viewer::imgui_widgets::section_heading("Tets");
             viewer::imgui_widgets::slider_float("Voxel size", &state.voxel_spacing, 0.01f, 0.1f);
             viewer::imgui_widgets::slider_int("Hole close", &state.hole_close_radius, 0, 5);
+            viewer::imgui_widgets::checkbox("Cut with input mesh", &state.cut_with_input_mesh);
             if (viewer::imgui_widgets::button_full_width("Create tets"))
-                createTets(mesh, state.voxel_spacing, state.hole_close_radius, tets, tet_renderer);
+                createTets(mesh, state.voxel_spacing, state.hole_close_radius, state.cut_with_input_mesh, tets,
+                           tet_renderer);
             viewer::imgui_widgets::checkbox("Show tets", &show_tets);
             viewer::imgui_widgets::checkbox("Tet wireframe", &tet_wireframe);
             if (!tet_wireframe)
