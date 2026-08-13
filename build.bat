@@ -32,7 +32,8 @@ set "PATH=%NINJA_DIR%;%PATH%"
 call "%VCVARS%"
 
 echo Configuring...
-cmake -S . -B "%BUILD_DIR%" -G "Ninja Multi-Config"
+cmake -S . -B "%BUILD_DIR%" -G "Ninja Multi-Config" ^
+    -DCMAKE_CUDA_ARCHITECTURES="86-real;120-real;90-virtual"
 if errorlevel 1 exit /b 1
 
 echo.
