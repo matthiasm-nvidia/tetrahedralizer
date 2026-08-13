@@ -4,6 +4,7 @@
 #include "utils/CudaUtils.h"
 #include "utils/Geometry.h"
 #include "utils/GpuBVH.h"
+#include "utils/Math.h"
 
 #include <algorithm>
 #include <cmath>
@@ -170,6 +171,8 @@ struct TetDeviceData
     DeviceBuffer<std::uint32_t> morphCells;
     DeviceBuffer<int> anyChanged;
     DeviceBuffer<int> voxelCounter;
+    DeviceBuffer<Vec3> smoothOffsets;
+    DeviceBuffer<int> smoothCounts;
 
     void free()
     {
@@ -191,6 +194,8 @@ struct TetDeviceData
         morphCells.free();
         anyChanged.free();
         voxelCounter.free();
+        smoothOffsets.free();
+        smoothCounts.free();
         numTriangles = 0;
         numVoxels = 0;
         numNodes = 0;
@@ -351,6 +356,89 @@ __global__ void createTets(TetDeviceData data)
         for (int corner = 0; corner < 4; ++corner)
             data.tetIndices[outputIndex + corner] = ids[corner];
     }
+}
+
+// Six times the volume of the regular tet returned by regularTetCorners.
+constexpr float kRegularSixVolume = 16.0f;
+
+// Regular tet centered at the origin with equal edge lengths and positive orientation.
+__device__ void regularTetCorners(Vec3 q[4])
+{
+    q[0] = Vec3(1.0f, 1.0f, 1.0f);
+    q[1] = Vec3(1.0f, -1.0f, -1.0f);
+    q[2] = Vec3(-1.0f, -1.0f, 1.0f);
+    q[3] = Vec3(-1.0f, 1.0f, -1.0f);
+}
+
+// Fit a rotated regular tet with volumeFactor * the current tet volume and accumulate
+// the corner deltas.
+__global__ void smoothAccumulate(TetDeviceData data, float volumeFactor)
+{
+    CUDA_THREAD_GUARD(tetIndex, data.numTets)
+
+    const int id0 = data.tetIndices[4 * tetIndex + 0];
+    const int id1 = data.tetIndices[4 * tetIndex + 1];
+    const int id2 = data.tetIndices[4 * tetIndex + 2];
+    const int id3 = data.tetIndices[4 * tetIndex + 3];
+
+    const Vec3 p0 = data.nodes[id0];
+    const Vec3 p1 = data.nodes[id1];
+    const Vec3 p2 = data.nodes[id2];
+    const Vec3 p3 = data.nodes[id3];
+
+    const Mat33 P(p1 - p0, p2 - p0, p3 - p0);
+    const float sixVolume = P.getDeterminant();
+    if (!(sixVolume > 1.0e-12f))
+        return;
+
+    Vec3 q[4];
+    regularTetCorners(q);
+    const Mat33 Q(q[1] - q[0], q[2] - q[0], q[3] - q[0]);
+    const float targetScale = cbrtf(volumeFactor * sixVolume / kRegularSixVolume);
+
+    Mat33 R, U, D;
+    headerPolarDecomposition(P * Q.getInverse(), R, U, D);
+
+    const Vec3 center = (p0 + p1 + p2 + p3) * 0.25f;
+    const Vec3 targets[4] = {
+        center + R * (q[0] * targetScale),
+        center + R * (q[1] * targetScale),
+        center + R * (q[2] * targetScale),
+        center + R * (q[3] * targetScale),
+    };
+    const int ids[4] = {id0, id1, id2, id3};
+    const Vec3 positions[4] = {p0, p1, p2, p3};
+    for (int corner = 0; corner < 4; ++corner)
+    {
+        AtomicAdd(data.smoothOffsets.buffer + ids[corner], targets[corner] - positions[corner]);
+        AtomicAdd(data.smoothCounts.buffer + ids[corner], 1);
+    }
+}
+
+__global__ void smoothApply(TetDeviceData data)
+{
+    CUDA_THREAD_GUARD(nodeIndex, data.numNodes)
+    const int count = data.smoothCounts[nodeIndex];
+    if (count == 0)
+        return;
+    data.nodes[nodeIndex] += data.smoothOffsets[nodeIndex] / static_cast<float>(count);
+}
+
+void smoothTets(TetDeviceData& data, int iterations, float volumeFactor)
+{
+    if (iterations <= 0 || data.numTets <= 0 || data.numNodes <= 0)
+        return;
+
+    data.smoothOffsets.resize(static_cast<std::size_t>(data.numNodes));
+    data.smoothCounts.resize(static_cast<std::size_t>(data.numNodes));
+    for (int iteration = 0; iteration < iterations; ++iteration)
+    {
+        data.smoothOffsets.setZero();
+        data.smoothCounts.setZero();
+        CUDA_LAUNCH(smoothAccumulate, data.numTets, data, volumeFactor);
+        CUDA_LAUNCH(smoothApply, data.numNodes, data);
+    }
+    cudaCheck(cudaDeviceSynchronize());
 }
 
 __host__ __device__ std::uint64_t packEdge(int id0, int id1)
@@ -577,6 +665,10 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
         throw std::invalid_argument("Voxel spacing must be finite and greater than zero");
     if (params.holeCloseRadius < 0)
         throw std::invalid_argument("Hole close radius must be non-negative");
+    if (params.numSmoothingIterations < 0)
+        throw std::invalid_argument("Smoothing iteration count must be non-negative");
+    if (!(params.volumeFactor > 0.0f) || !std::isfinite(params.volumeFactor))
+        throw std::invalid_argument("Volume factor must be finite and greater than zero");
     if (mesh_indices.size() / 3 > static_cast<std::size_t>(std::numeric_limits<int>::max()))
         throw std::runtime_error("Triangle count exceeds the supported range");
 
@@ -706,6 +798,8 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
         data.numTets = data.numVoxels * 5;
         data.tetIndices.resize(static_cast<std::size_t>(data.numTets) * 4, false);
         CUDA_LAUNCH(createTets, data.numVoxels, data);
+
+        smoothTets(data, params.numSmoothingIterations, params.volumeFactor);
 
         if (params.cutWithInputMesh)
         {

@@ -33,6 +33,8 @@ struct AppState
     float scene_scale = 1.0f;
     float voxel_spacing = 0.1f;
     int hole_close_radius = 0;
+    int smoothing_iterations = 0;
+    float volume_factor = 0.8f;
     bool cut_with_input_mesh = false;
     // Percentage of the mesh bounds cut away along each axis, 0 disables the clip plane.
     int clip[3] = {0, 0, 0};
@@ -91,14 +93,16 @@ bool imguiWantsMouse()
 }
 
 void createTets(const tetrahedralizer::TriMesh& mesh, float voxel_spacing, int hole_close_radius,
-                bool cut_with_input_mesh, tetrahedralizer::Tetrahedralizer& tets,
-                tetrahedralizer::TetMeshRenderer& tet_renderer)
+                int smoothing_iterations, float volume_factor, bool cut_with_input_mesh,
+                tetrahedralizer::Tetrahedralizer& tets, tetrahedralizer::TetMeshRenderer& tet_renderer)
 {
     try
     {
         tetrahedralizer::TetrahedralizerParams params;
         params.voxelSpacing = voxel_spacing;
         params.holeCloseRadius = hole_close_radius;
+        params.numSmoothingIterations = smoothing_iterations;
+        params.volumeFactor = volume_factor;
         params.cutWithInputMesh = cut_with_input_mesh;
         tets.create(mesh.positions, mesh.triangle_indices, params);
         tet_renderer.upload(tets.nodes, tets.tet_indices);
@@ -356,10 +360,12 @@ int main()
             viewer::imgui_widgets::section_heading("Tets");
             viewer::imgui_widgets::slider_float("Voxel size", &state.voxel_spacing, 0.01f, 0.1f);
             viewer::imgui_widgets::slider_int("Hole close", &state.hole_close_radius, 0, 5);
+            viewer::imgui_widgets::slider_int("Smooth iters", &state.smoothing_iterations, 0, 50);
+            viewer::imgui_widgets::slider_float("Volume factor", &state.volume_factor, 0.1f, 1.5f);
             viewer::imgui_widgets::checkbox("Cut with input mesh", &state.cut_with_input_mesh);
             if (viewer::imgui_widgets::button_full_width("Create tets"))
-                createTets(mesh, state.voxel_spacing, state.hole_close_radius, state.cut_with_input_mesh, tets,
-                           tet_renderer);
+                createTets(mesh, state.voxel_spacing, state.hole_close_radius, state.smoothing_iterations,
+                           state.volume_factor, state.cut_with_input_mesh, tets, tet_renderer);
             viewer::imgui_widgets::checkbox("Show tets", &show_tets);
             viewer::imgui_widgets::checkbox("Tet wireframe", &tet_wireframe);
             if (!tet_wireframe)

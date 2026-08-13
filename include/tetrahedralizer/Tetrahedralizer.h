@@ -16,6 +16,11 @@ struct TetrahedralizerParams
     int holeCloseRadius = 0;
     // When true, find one cut per tet edge against the input surface mesh.
     bool cutWithInputMesh = false;
+    // Shape-matching iterations that drive each tet toward a regular tet.
+    // 0 skips smoothing.
+    int numSmoothingIterations = 0;
+    // Target regular-tet volume as a fraction of the current tet volume (< 1 contracts).
+    float volumeFactor = 0.8f;
 };
 
 class Tetrahedralizer
