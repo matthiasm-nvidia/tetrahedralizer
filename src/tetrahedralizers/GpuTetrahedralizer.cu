@@ -24,6 +24,11 @@ namespace
 
 constexpr std::uint64_t kCoordMask = (1ull << 21) - 1ull;
 
+// Cell overlap margin as a fraction of the voxel spacing. Without it, a triangle
+// that grazes a cell can be rejected by floating point error and leave a pinhole
+// in the surface shell, which lets the exterior flood fill leak into the interior.
+constexpr float kVoxelOverlapMargin = 1.0e-3f;
+
 __device__ __constant__ int kVoxelCorners[8][3] = {
     {0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0},
     {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1},
@@ -326,16 +331,18 @@ __global__ void createTriangleVoxels(TetDeviceData data, bool countOnly)
     const DeviceVec3 p2(data.meshVertices[i2]);
     const DeviceVec3 origin(data.worldOrigin);
 
-    const int x0 = static_cast<int>(floorf((min3(p0.x, p1.x, p2.x) - origin.x) * data.invGridSpacing));
-    const int y0 = static_cast<int>(floorf((min3(p0.y, p1.y, p2.y) - origin.y) * data.invGridSpacing));
-    const int z0 = static_cast<int>(floorf((min3(p0.z, p1.z, p2.z) - origin.z) * data.invGridSpacing));
-    const int x1 = static_cast<int>(floorf((max3(p0.x, p1.x, p2.x) - origin.x) * data.invGridSpacing));
-    const int y1 = static_cast<int>(floorf((max3(p0.y, p1.y, p2.y) - origin.y) * data.invGridSpacing));
-    const int z1 = static_cast<int>(floorf((max3(p0.z, p1.z, p2.z) - origin.z) * data.invGridSpacing));
+    const float margin = data.gridSpacing * kVoxelOverlapMargin;
+    const int x0 = static_cast<int>(floorf((min3(p0.x, p1.x, p2.x) - margin - origin.x) * data.invGridSpacing));
+    const int y0 = static_cast<int>(floorf((min3(p0.y, p1.y, p2.y) - margin - origin.y) * data.invGridSpacing));
+    const int z0 = static_cast<int>(floorf((min3(p0.z, p1.z, p2.z) - margin - origin.z) * data.invGridSpacing));
+    const int x1 = static_cast<int>(floorf((max3(p0.x, p1.x, p2.x) + margin - origin.x) * data.invGridSpacing));
+    const int y1 = static_cast<int>(floorf((max3(p0.y, p1.y, p2.y) + margin - origin.y) * data.invGridSpacing));
+    const int z1 = static_cast<int>(floorf((max3(p0.z, p1.z, p2.z) + margin - origin.z) * data.invGridSpacing));
 
     int count = 0;
     int outputIndex = data.numVoxels + data.firstVoxel[triangleIndex];
-    const DeviceVec3 halfExtents(data.gridSpacing * 0.5f, data.gridSpacing * 0.5f, data.gridSpacing * 0.5f);
+    const float halfExtent = data.gridSpacing * 0.5f + margin;
+    const DeviceVec3 halfExtents(halfExtent, halfExtent, halfExtent);
     for (int x = x0; x <= x1; ++x)
     {
         for (int y = y0; y <= y1; ++y)
@@ -830,6 +837,40 @@ __global__ void splitTets(TetDeviceData data, bool countOnly)
     }
 }
 
+// Classify each tet from the signed side of the closest input triangle.
+// Consistently outward-facing input triangles make inside=true.
+__global__ void markKeptTets(TetDeviceData data, int* keptTetOffsets)
+{
+    CUDA_THREAD_GUARD(tetIndex, data.numTets)
+
+    Vec3 center(Zero);
+    for (int corner = 0; corner < 4; ++corner)
+        center += data.nodes[data.tetIndices[4 * tetIndex + corner]];
+    center *= 0.25f;
+
+    int closestTri = -1;
+    Vec3 bary(Zero);
+    Vec3 closestPos(Zero);
+    bool inside = false;
+    header_queryClosestPoint(data.triangleBvh, center, 0.0f, data.meshVertices.buffer,
+                             reinterpret_cast<int*>(data.meshIndices.buffer), closestTri, bary, closestPos, inside);
+
+    // An inconclusive query keeps the tet instead of deleting geometry.
+    keptTetOffsets[tetIndex] = closestTri < 0 || inside ? 1 : 0;
+}
+
+__global__ void compactKeptTets(TetDeviceData data, const int* keptTetOffsets, int* compactedTetIndices)
+{
+    CUDA_THREAD_GUARD(tetIndex, data.numTets)
+
+    if (keptTetOffsets[tetIndex + 1] == keptTetOffsets[tetIndex])
+        return;
+
+    const int outputTet = keptTetOffsets[tetIndex];
+    for (int corner = 0; corner < 4; ++corner)
+        compactedTetIndices[4 * outputTet + corner] = data.tetIndices[4 * tetIndex + corner];
+}
+
 __global__ void stampGeomCells(TetDeviceData data)
 {
     CUDA_THREAD_GUARD(voxelIndex, data.numVoxels)
@@ -1010,6 +1051,33 @@ void applyCutTemplates(TetDeviceData& data)
     }
     CUDA_LAUNCH(splitTets, data.numTets, data, false);
     data.numTets += numExtraTets;
+}
+
+void carveOutsideTets(TetDeviceData& data)
+{
+    if (data.numTets <= 0)
+        return;
+
+    DeviceBuffer<int> keptTetOffsets;
+    keptTetOffsets.resize(static_cast<std::size_t>(data.numTets + 1), false);
+    keptTetOffsets.setZero();
+    CUDA_LAUNCH(markKeptTets, data.numTets, data, keptTetOffsets.buffer);
+
+    thrust::device_ptr<int> offsets(keptTetOffsets.buffer);
+    thrust::exclusive_scan(offsets, offsets + data.numTets + 1, offsets);
+    const int keptTetCount = readDeviceInt(keptTetOffsets, data.numTets);
+
+    if (keptTetCount < data.numTets)
+    {
+        DeviceBuffer<int> compactedTetIndices;
+        compactedTetIndices.resize(static_cast<std::size_t>(keptTetCount) * 4, false);
+        CUDA_LAUNCH(compactKeptTets, data.numTets, data, keptTetOffsets.buffer, compactedTetIndices.buffer);
+        data.tetIndices.swap(compactedTetIndices);
+        compactedTetIndices.free();
+        data.numTets = keptTetCount;
+    }
+
+    keptTetOffsets.free();
 }
 
 void applyMarkedEdgeCuts(TetDeviceData& data, const std::vector<int>& edgeCutFlags)
@@ -1246,6 +1314,8 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
 
             if (numCutVertices > 0)
                 applyCutTemplates(data);
+
+            carveOutsideTets(data);
         }
 
         cudaCheck(cudaDeviceSynchronize());

@@ -257,7 +257,7 @@ int main()
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_COMPAT_PROFILE);
 
-    GLFWwindow* window = glfwCreateWindow(1600, 900, "Tetrahedralizer", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(3200, 1800, "Tetrahedralizer", nullptr, nullptr);
     if (window == nullptr)
     {
         std::fprintf(stderr, "Failed to create window\n");

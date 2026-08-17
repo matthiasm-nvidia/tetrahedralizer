@@ -14,7 +14,8 @@ struct TetrahedralizerParams
     // Morphological close radius in voxels before the exterior flood fill.
     // 0 skips closing; larger values seal bigger shell holes.
     int holeCloseRadius = 0;
-    // When true, find one cut per tet edge against the input surface mesh.
+    // Cut tet edges against the input surface, split them, then discard tets
+    // whose centers lie outside. Input triangles must face outward.
     bool cutWithInputMesh = false;
     // Shape-matching iterations that drive each tet toward a regular tet.
     // 0 skips smoothing.

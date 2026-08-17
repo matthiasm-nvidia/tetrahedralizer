@@ -18,7 +18,7 @@ GPU tetrahedralization for unstructured, non-manifold polygonal meshes. The mesh
 | `holeCloseRadius` | Morphological close radius in voxels before flood fill (`0` skips) |
 | `numSmoothingIterations` | Shape-matching passes (`0` skips) |
 | `volumeFactor` | Target regular-tet volume as a fraction of the current tet volume (`< 1` contracts) |
-| `cutWithInputMesh` | When enabled, cut tet edges against the input surface and split tets with templates |
+| `cutWithInputMesh` | Cut and split tets at the input surface, then carve tets whose centers are outside |
 
 See `TetrahedralizerParams` in `include/tetrahedralizer/Tetrahedralizer.h`.
 
@@ -31,6 +31,7 @@ See `TetrahedralizerParams` in `include/tetrahedralizer/Tetrahedralizer.h`.
 - Five-tet voxel decomposition → node positions and tet indices
 - Optional shape-matching smoothing
 - Cut tets along the input mesh: BVH edge cuts, Steiner vertices, template-based tet split
+- Parallel outside-tet carving from each tet center and its closest oriented input triangle
 - Face-neighbor table (`tet_neighbors`, 4 slots per tet) via sorted face pairing
 - Interactive viewer: load OBJ, run tetrahedralization, inspect the tet mesh (clip planes, voxel size, smooth/cut options)
 
@@ -47,6 +48,7 @@ Host-baked 64×diagBits child templates (from the tet-cut constructive builder).
 1. **Cut vertices**: unique tet edges → BVH hits → append cut nodes; `edgeCutVertices[edge]`.
 2. **Steiner vertices**: for each tet, resolve `mask` / `diagBits`; if the template uses local index 10, count → scan → append centroids; `steinerVertexId[tet]`.
 3. **Split tets**: count → scan → write children from the template (`0..3` corners, `4..9` edge cuts, `10` Steiner).
+4. **Carve**: classify child-tet centers by the closest oriented input triangle → scan → compact inside tets.
 
 ## Layout
 

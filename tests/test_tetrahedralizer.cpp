@@ -131,12 +131,12 @@ void makeCube(std::vector<Vec3>& vertices, std::vector<std::uint32_t>& indices, 
         {0, 0, size}, {size, 0, size}, {size, size, size}, {0, size, size},
     };
     indices = {
-        0, 1, 2, 0, 2, 3, // -Z
-        4, 6, 5, 4, 7, 6, // +Z
-        0, 4, 5, 0, 5, 1, // -Y
-        3, 2, 6, 3, 6, 7, // +Y
-        0, 3, 7, 0, 7, 4, // -X
-        1, 5, 6, 1, 6, 2, // +X
+        0, 2, 1, 0, 3, 2, // -Z
+        4, 5, 6, 4, 6, 7, // +Z
+        0, 1, 5, 0, 5, 4, // -Y
+        3, 7, 6, 3, 6, 2, // +Y
+        0, 4, 7, 0, 7, 3, // -X
+        1, 2, 6, 1, 6, 5, // +X
     };
 }
 
@@ -302,21 +302,16 @@ MU_TEST(test_surface_cut_smoke)
 {
     std::vector<Vec3> vertices;
     std::vector<std::uint32_t> indices;
-    makeCube(vertices, indices, 3.0f);
-
-    // Plane through the cube: two triangles on z = 1.5.
-    vertices.push_back({-0.1f, -0.1f, 1.5f});
-    vertices.push_back({3.1f, -0.1f, 1.5f});
-    vertices.push_back({3.1f, 3.1f, 1.5f});
-    vertices.push_back({-0.1f, 3.1f, 1.5f});
-    const std::uint32_t b = 8;
-    indices.insert(indices.end(), {b + 0, b + 1, b + 2, b + 0, b + 2, b + 3});
+    makeCube(vertices, indices, 2.5f);
 
     TetrahedralizerParams params;
     params.voxelSpacing = 1.0f;
-    params.cutWithInputMesh = true;
     params.numSmoothingIterations = 0;
 
+    Tetrahedralizer uncutMesh;
+    uncutMesh.create(vertices, indices, params);
+
+    params.cutWithInputMesh = true;
     Tetrahedralizer mesh;
     mesh.create(vertices, indices, params);
     mu_check(!mesh.empty());
@@ -325,7 +320,8 @@ MU_TEST(test_surface_cut_smoke)
     mu_assert_int_eq(0, stats.badTets);
     mu_assert_int_eq(0, stats.overusedFaces);
     mu_assert_int_eq(0, stats.neighborMismatches);
-    mu_check(mesh.numTets() >= 100);
+    mu_check(mesh.numTets() < uncutMesh.numTets());
+    mu_check(stats.volume < analyse(uncutMesh).volume);
 }
 
 MU_TEST_SUITE(test_suite)
