@@ -88,6 +88,22 @@ if(TETRAHEDRALIZER_HAS_CUDA)
         target_compile_options(tetrahedralizer PRIVATE
             $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>)
     endif()
+
+    add_executable(tetrahedralizer_tests
+        tests/test_tetrahedralizer.cpp
+        src/Tetrahedralizer.cpp
+        ${TETRAHEDRALIZER_CUDA_SOURCES}
+    )
+    target_include_directories(tetrahedralizer_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(tetrahedralizer_tests PRIVATE ${TETRAHEDRALIZER_CUDA_LIBS})
+    target_compile_definitions(tetrahedralizer_tests PRIVATE TETRAHEDRALIZER_HAS_CUDA)
+    if(MSVC)
+        target_compile_options(tetrahedralizer_tests PRIVATE
+            $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>)
+    endif()
 endif()
 
 if(WIN32)

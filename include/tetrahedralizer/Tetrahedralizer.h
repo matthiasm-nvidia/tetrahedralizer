@@ -30,10 +30,17 @@ public:
 
     std::vector<Vec3> nodes;
     std::vector<int> tet_indices;
+    // 4 entries per tet: adjacent tet index for each local face, or -1 on the boundary.
+    std::vector<int> tet_neighbors;
 
     void clear();
     void create(const std::vector<Vec3>& mesh_vertices, const std::vector<std::uint32_t>& mesh_indices,
                 const TetrahedralizerParams& params = {});
+
+    // Cut unique tet edges at midpoints with the given probability, then split (GPU).
+    void cutRandomEdges(float probability, unsigned seed = 1);
+    // Apply a 6-bit edge-cut mask to a single-tet mesh, then split (GPU).
+    void cutSingleTetByMask(int mask);
 
     bool empty() const
     {

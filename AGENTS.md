@@ -1,7 +1,7 @@
-# Reconstruction Sandbox
+# Project
 
-A sandbox to test various reconstruction methods to create a triangle mesh from a point cloud.
-The point clouds are very noisy.
+See `PROJECT.md` for goals, pipeline, and implementation status.
+See `TESTS.md` for the test suite and how to run `test.bat`.
 
 ### Questions vs implementation
 
@@ -12,9 +12,10 @@ The point clouds are very noisy.
 
 - Match existing patterns in the module you are editing. Read surrounding code before writing new code.
 - Always try to implement a feature in a simple way. I like simplicity
+- Do not overengineer
 - Do only implement what is asked for. 
 - Use the macros from CudaUtils.h and the DeviceBuffer object when possible when writing cuda code 
-- Always ask when changing Vec.h or the files in the utils folder
+- Never change Vec.h or the files in the utils folder unless I explicitly ask for it
 
 ## Building
 
