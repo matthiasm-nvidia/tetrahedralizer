@@ -11,6 +11,7 @@
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 using tetrahedralizer::Tetrahedralizer;
@@ -31,6 +32,11 @@ std::string faceKey(int a, int b, int c)
     return std::to_string(ids[0]) + "," + std::to_string(ids[1]) + "," + std::to_string(ids[2]);
 }
 
+std::pair<int, int> edgeKey(int a, int b)
+{
+    return a < b ? std::make_pair(a, b) : std::make_pair(b, a);
+}
+
 float signedSixVolume(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& d)
 {
     const Vec3 ab = b - a;
@@ -47,6 +53,11 @@ struct MeshStats
     int boundaryFaces = 0;
     int interiorFaces = 0;
     int neighborMismatches = 0;
+    int maxBoundaryFacesPerTet = 0;
+    // Boundary edges used by an odd number of boundary faces. A tet edge that one
+    // side splits and the other does not leaves the unsplit face unmatched, so its
+    // long edge is seen by a single boundary face. Independent of node positions.
+    int oddBoundaryEdges = 0;
     float volume = 0.0f;
     float minVolume = 0.0f;
 };
@@ -87,15 +98,42 @@ MeshStats analyse(const Tetrahedralizer& mesh)
             ++stats.overusedFaces;
     }
 
+    std::map<std::pair<int, int>, int> boundaryEdgeCounts;
+    for (int ti = 0; ti < stats.tetCount; ++ti)
+    {
+        for (const auto& face : kTetFaces)
+        {
+            const int i0 = mesh.tet_indices[4 * ti + face[0]];
+            const int i1 = mesh.tet_indices[4 * ti + face[1]];
+            const int i2 = mesh.tet_indices[4 * ti + face[2]];
+            if (faceCounts[faceKey(i0, i1, i2)] != 1)
+                continue;
+
+            ++boundaryEdgeCounts[edgeKey(i0, i1)];
+            ++boundaryEdgeCounts[edgeKey(i1, i2)];
+            ++boundaryEdgeCounts[edgeKey(i2, i0)];
+        }
+    }
+
+    for (const auto& entry : boundaryEdgeCounts)
+    {
+        if (entry.second % 2 != 0)
+            ++stats.oddBoundaryEdges;
+    }
+
     if (static_cast<int>(mesh.tet_neighbors.size()) == stats.tetCount * 4)
     {
         for (int ti = 0; ti < stats.tetCount; ++ti)
         {
+            int boundaryFaces = 0;
             for (int f = 0; f < 4; ++f)
             {
                 const int nbr = mesh.tet_neighbors[4 * ti + f];
                 if (nbr < 0)
+                {
+                    ++boundaryFaces;
                     continue;
+                }
                 if (nbr >= stats.tetCount)
                 {
                     ++stats.neighborMismatches;
@@ -114,6 +152,8 @@ MeshStats analyse(const Tetrahedralizer& mesh)
                 if (!found)
                     ++stats.neighborMismatches;
             }
+            if (boundaryFaces > stats.maxBoundaryFacesPerTet)
+                stats.maxBoundaryFacesPerTet = boundaryFaces;
         }
     }
     else
@@ -390,11 +430,11 @@ MU_TEST(test_project_to_input_mesh_smoke)
     Tetrahedralizer projected;
     projected.create(vertices, indices, params);
     mu_check(!projected.empty());
-    mu_assert_int_eq(baseMesh.numTets(), projected.numTets());
-    mu_assert_int_eq(static_cast<int>(baseMesh.nodes.size()), static_cast<int>(projected.nodes.size()));
+    mu_check(projected.numTets() > baseMesh.numTets());
+    mu_check(projected.nodes.size() > baseMesh.nodes.size());
 
     int moved = 0;
-    for (std::size_t i = 0; i < projected.nodes.size(); ++i)
+    for (std::size_t i = 0; i < baseMesh.nodes.size(); ++i)
     {
         if ((projected.nodes[i] - baseMesh.nodes[i]).magnitudeSquared() > 1.0e-12f)
             ++moved;
@@ -402,8 +442,48 @@ MU_TEST(test_project_to_input_mesh_smoke)
     mu_check(moved > 0);
 
     const MeshStats stats = analyse(projected);
+    mu_assert_int_eq(0, stats.badTets);
     mu_assert_int_eq(0, stats.overusedFaces);
     mu_assert_int_eq(0, stats.neighborMismatches);
+    mu_assert_int_eq(0, stats.oddBoundaryEdges);
+    mu_check(stats.maxBoundaryFacesPerTet <= 1);
+}
+
+MU_TEST(test_boundary_refinement_stays_conforming)
+{
+    std::vector<Vec3> vertices;
+    std::vector<std::uint32_t> indices;
+    makeCube(vertices, indices, 4.0f);
+
+    TetrahedralizerParams params;
+    params.voxelSpacing = 1.0f;
+    params.projectToInputMesh = true;
+    params.numOptimizationIterations = 0;
+
+    Tetrahedralizer refined;
+    refined.create(vertices, indices, params);
+    mu_check(!refined.empty());
+
+    const MeshStats refinedStats = analyse(refined);
+    mu_assert_int_eq(0, refinedStats.badTets);
+    mu_assert_int_eq(0, refinedStats.overusedFaces);
+    mu_assert_int_eq(0, refinedStats.neighborMismatches);
+    mu_assert_int_eq(0, refinedStats.oddBoundaryEdges);
+    mu_check(refinedStats.maxBoundaryFacesPerTet <= 1);
+
+    params.numOptimizationIterations = 10;
+    Tetrahedralizer optimized;
+    optimized.create(vertices, indices, params);
+
+    // Smoothing only moves nodes, so the refined connectivity must survive it, and
+    // the step backoff must keep every tet from inverting.
+    const MeshStats optimizedStats = analyse(optimized);
+    mu_assert_int_eq(refined.numTets(), optimized.numTets());
+    mu_assert_int_eq(0, optimizedStats.overusedFaces);
+    mu_assert_int_eq(0, optimizedStats.neighborMismatches);
+    mu_assert_int_eq(0, optimizedStats.oddBoundaryEdges);
+    mu_assert_int_eq(0, optimizedStats.badTets);
+    mu_check(optimizedStats.minVolume > 0.0f);
 }
 
 MU_TEST(test_optimization_loop_smoke)
@@ -425,7 +505,10 @@ MU_TEST(test_optimization_loop_smoke)
     const MeshStats stats = analyse(mesh);
     mu_assert_int_eq(0, stats.overusedFaces);
     mu_assert_int_eq(0, stats.neighborMismatches);
+    mu_assert_int_eq(0, stats.oddBoundaryEdges);
+    mu_assert_int_eq(0, stats.badTets);
     mu_check(stats.boundaryFaces > 0);
+    mu_check(stats.maxBoundaryFacesPerTet <= 1);
 }
 
 MU_TEST_SUITE(test_suite)
@@ -437,6 +520,7 @@ MU_TEST_SUITE(test_suite)
     MU_RUN_TEST(test_subdivision_preserves_manifold_volume);
     MU_RUN_TEST(test_max_edge_length_parameter);
     MU_RUN_TEST(test_project_to_input_mesh_smoke);
+    MU_RUN_TEST(test_boundary_refinement_stays_conforming);
     MU_RUN_TEST(test_optimization_loop_smoke);
 }
 

@@ -68,11 +68,17 @@ Run the full create pipeline with `maxEdgeLength = 1.1`. Checks manifold / posit
 
 ### `test_project_to_input_mesh_smoke`
 
-Voxelize a cube with `projectToInputMesh`. Topology (tet/node counts, neighbors) stays the same; at least some nodes move.
+Voxelize a cube with `projectToInputMesh`. Boundary refinement increases the tet/node counts, preserves a valid manifold mesh, and leaves every tet with at most one boundary face before projection.
+
+### `test_boundary_refinement_stays_conforming`
+
+Side-4 cube with `projectToInputMesh`, once without and once with optimization iterations. Checks that boundary refinement leaves a conforming mesh (positive volumes, face usage, neighbors, at most one boundary face per tet), that the connectivity survives the optimization loop, and that all volumes stay positive afterwards (the step backoff in `applyNodeMovesSafely`).
+
+Conformity uses `oddBoundaryEdges`: every boundary edge must be used by an even number of boundary faces. If one tet splits an edge and its neighbor does not, the unsplit face stays unmatched and its long edge is seen by a single boundary face. The count is purely topological, so it still detects such a T-junction after nodes have moved, unlike a colinearity test.
 
 ### `test_optimization_loop_smoke`
 
-Voxelize a cube with `projectToInputMesh` and `numOptimizationIterations = 5`. Checks the mesh stays manifold with boundary faces after project→smooth loops.
+Voxelize a cube with `projectToInputMesh` and `numOptimizationIterations = 5`. Checks the mesh stays manifold with boundary faces, with at most one boundary face per tet, after project→smooth loops.
 
 ## Adding tests
 

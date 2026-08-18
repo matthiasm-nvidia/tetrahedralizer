@@ -10,7 +10,8 @@ GPU tetrahedralization for unstructured, non-manifold polygonal meshes. The mesh
 4. **Split voxels** (optional): only merge surface-voxel corners across faces crossed by input geometry; interior voxels remain connected.
 5. **Tetrahedralize voxels**: each solid cell becomes five tets via an alternating five-tet cube decomposition so neighboring face diagonals agree.
 6. **Subdivide** (optional): split tet edges longer than `maxEdgeLength` at their midpoints.
-7. **Optimize** (optional): each iteration projects boundary nodes onto the input mesh (if enabled), then runs one shape-matching smooth with tangential-only motion on surface nodes.
+7. **Prepare boundary tets** (when projecting): separate multiple boundary faces into different tets.
+8. **Optimize** (optional): each iteration projects boundary nodes onto the input mesh (if enabled), then runs one shape-matching smooth with tangential-only motion on surface nodes.
 
 ## Parameters
 
@@ -120,9 +121,13 @@ Enabled by `projectToInputMesh` and/or `numOptimizationIterations > 0`. Runs aft
 
 **Projection** (when `projectToInputMesh`):
 
+Before projection, boundary topology is refined until no tet edge has both opposite faces on the boundary. Each such edge is split at its midpoint with the existing cut templates (a tet with two boundary faces splits one edge; three or four boundary faces mark every qualifying pair). Neighbors are rebuilt after each pass.
+
 1. **Accumulate normals**: for each tet face with no neighbor, add the outward face normal to its three nodes.
 2. **Normalize**: unit-length normals for non-zero accumulations; interior nodes stay zero.
 3. **Raycast**: for each surface node, cast along `-normal` (fall back to `+normal`) against the input-mesh BVH; on hit, move to `hit + 0.1 * voxelSpacing * normal` (stay slightly outside). Hits farther than `2 * voxelSpacing` are ignored and the motion per pass is clamped to `0.1 * voxelSpacing`, so distant geometry cannot pull nodes into spikes. Misses leave the node unchanged.
+
+Projection and smoothing never write node positions directly. Both fill a per-node offset buffer, and `applyNodeMovesSafely` then halves the step of every node belonging to a tet that the move would shrink below `kMinMoveVolumeFraction` of its current volume, repeating until no tet is affected (a step below `kMinMoveScale` becomes zero, which restores the original corners, so the loop always terminates). Without this backoff interior midpoints added by boundary refinement can cross a boundary face and produce spikes.
 
 **Optimization** (`numOptimizationIterations` times): if projection is on, project first (normals reused); then one shape-matching smooth. Surface nodes with a normal keep only the tangential part of the smooth correction (`corr -= n * dot(corr, n)`). With projection off, smooth runs unconstrained. With iterations `0` and projection on, projection runs once.
 

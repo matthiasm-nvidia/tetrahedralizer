@@ -33,6 +33,10 @@ constexpr float kProjectionOffsetFraction = 0.1f;
 constexpr float kProjectionMaxDistanceFraction = 2.0f;
 // Largest distance a node may travel per projection pass.
 constexpr float kProjectionMaxStepFraction = 0.1f;
+// A node move may not leave a tet with less than this fraction of its volume.
+constexpr float kMinMoveVolumeFraction = 0.2f;
+// Below this fraction of the requested step a node simply stays where it is.
+constexpr float kMinMoveScale = 1.0e-3f;
 
 __device__ __constant__ int kVoxelCorners[8][3] = {
     {0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0},
@@ -262,6 +266,9 @@ struct TetDeviceData
     DeviceBuffer<int> voxelCounter;
     DeviceBuffer<Vec3> smoothOffsets;
     DeviceBuffer<int> smoothCounts;
+    DeviceBuffer<Vec3> moveOffsets;
+    DeviceBuffer<float> moveScales;
+    DeviceBuffer<int> moveBlocked;
 
     void free()
     {
@@ -294,6 +301,9 @@ struct TetDeviceData
         voxelCounter.free();
         smoothOffsets.free();
         smoothCounts.free();
+        moveOffsets.free();
+        moveScales.free();
+        moveBlocked.free();
         numTriangles = 0;
         numVoxels = 0;
         numNodes = 0;
@@ -670,7 +680,96 @@ __global__ void smoothApply(TetDeviceData data, const Vec3* normals)
         if (normal.magnitudeSquared() > 0.0f)
             correction -= normal * correction.dot(normal);
     }
-    data.nodes[nodeIndex] += correction;
+    data.moveOffsets[nodeIndex] = correction;
+}
+
+__global__ void resetMoveScales(TetDeviceData data)
+{
+    CUDA_THREAD_GUARD(nodeIndex, data.numNodes)
+    data.moveScales[nodeIndex] = 1.0f;
+}
+
+__device__ float scaledSixVolume(const TetDeviceData& data, const int ids[4])
+{
+    Vec3 p[4];
+    for (int corner = 0; corner < 4; ++corner)
+    {
+        const int id = ids[corner];
+        p[corner] = data.nodes.buffer[id] + data.moveOffsets.buffer[id] * data.moveScales.buffer[id];
+    }
+    return Mat33(p[1] - p[0], p[2] - p[0], p[3] - p[0]).getDeterminant();
+}
+
+// Marks the nodes of every tet that the scaled moves would flatten or invert.
+__global__ void flagCollapsingTets(TetDeviceData data)
+{
+    CUDA_THREAD_GUARD(tetIndex, data.numTets)
+
+    int ids[4];
+    Vec3 p[4];
+    for (int corner = 0; corner < 4; ++corner)
+    {
+        ids[corner] = data.tetIndices[4 * tetIndex + corner];
+        p[corner] = data.nodes[ids[corner]];
+    }
+
+    const float sixVolume = Mat33(p[1] - p[0], p[2] - p[0], p[3] - p[0]).getDeterminant();
+    // An already degenerate tet cannot be protected by backing off, so ignore it.
+    if (!(sixVolume > 0.0f))
+        return;
+    if (scaledSixVolume(data, ids) >= kMinMoveVolumeFraction * sixVolume)
+        return;
+
+    for (int corner = 0; corner < 4; ++corner)
+        data.moveBlocked[ids[corner]] = 1;
+    data.anyChanged[0] = 1;
+}
+
+__global__ void shrinkBlockedMoves(TetDeviceData data)
+{
+    CUDA_THREAD_GUARD(nodeIndex, data.numNodes)
+    if (data.moveBlocked[nodeIndex] == 0)
+        return;
+
+    const float scale = data.moveScales[nodeIndex] * 0.5f;
+    data.moveScales[nodeIndex] = scale > kMinMoveScale ? scale : 0.0f;
+}
+
+__global__ void applyNodeMoves(TetDeviceData data)
+{
+    CUDA_THREAD_GUARD(nodeIndex, data.numNodes)
+    data.nodes[nodeIndex] += data.moveOffsets[nodeIndex] * data.moveScales[nodeIndex];
+}
+
+int readDeviceInt(const DeviceBuffer<int>& values, int index)
+{
+    int value = 0;
+    cudaCheck(cudaMemcpy(&value, values.buffer + index, sizeof(int), cudaMemcpyDeviceToHost));
+    return value;
+}
+
+// Halves the step of nodes whose tets would collapse until none does, then moves them.
+// Zeroed scales restore the original corners, so the loop always reaches a safe state.
+void applyNodeMovesSafely(TetDeviceData& data)
+{
+    constexpr int kMaxBackoffPasses = 20;
+
+    data.moveScales.resize(static_cast<std::size_t>(data.numNodes), false);
+    data.moveBlocked.resize(static_cast<std::size_t>(data.numNodes), false);
+    data.anyChanged.resize(1, false);
+    CUDA_LAUNCH(resetMoveScales, data.numNodes, data);
+
+    for (int pass = 0; pass < kMaxBackoffPasses; ++pass)
+    {
+        data.moveBlocked.setZero();
+        data.anyChanged.setZero();
+        CUDA_LAUNCH(flagCollapsingTets, data.numTets, data);
+        if (readDeviceInt(data.anyChanged, 0) == 0)
+            break;
+        CUDA_LAUNCH(shrinkBlockedMoves, data.numNodes, data);
+    }
+
+    CUDA_LAUNCH(applyNodeMoves, data.numNodes, data);
 }
 
 void smoothTets(TetDeviceData& data, int iterations, float volumeFactor, const Vec3* normals = nullptr)
@@ -680,12 +779,15 @@ void smoothTets(TetDeviceData& data, int iterations, float volumeFactor, const V
 
     data.smoothOffsets.resize(static_cast<std::size_t>(data.numNodes));
     data.smoothCounts.resize(static_cast<std::size_t>(data.numNodes));
+    data.moveOffsets.resize(static_cast<std::size_t>(data.numNodes), false);
     for (int iteration = 0; iteration < iterations; ++iteration)
     {
         data.smoothOffsets.setZero();
         data.smoothCounts.setZero();
+        data.moveOffsets.setZero();
         CUDA_LAUNCH(smoothAccumulate, data.numTets, data, volumeFactor);
         CUDA_LAUNCH(smoothApply, data.numNodes, data, normals);
+        applyNodeMovesSafely(data);
     }
     cudaCheck(cudaDeviceSynchronize());
 }
@@ -910,30 +1012,31 @@ __global__ void projectSurfaceNodes(TetDeviceData data, const Vec3* normals, flo
     else
         return;
 
-    data.nodes[nodeIndex] = origin + normal * fminf(fmaxf(distance, -maxStep), maxStep);
+    data.moveOffsets[nodeIndex] = normal * fminf(fmaxf(distance, -maxStep), maxStep);
 }
 
-__global__ void createSubdivisionVertices(TetDeviceData data, float maxEdgeLength, int originalNodeCount,
-                                          bool countOnly)
+__global__ void markLongEdges(TetDeviceData data, float maxEdgeLength)
 {
     CUDA_THREAD_GUARD(edgeIndex, data.numEdges)
     const std::uint64_t edge = data.edges[edgeIndex];
     const int id0 = static_cast<int>(edge >> 32);
     const int id1 = static_cast<int>(edge & 0xffffffffu);
     const Vec3 delta = data.nodes[id1] - data.nodes[id0];
-    const bool subdivide = delta.magnitudeSquared() > maxEdgeLength * maxEdgeLength;
-    if (countOnly)
-    {
-        data.firstCutVertex[edgeIndex] = subdivide ? 1 : 0;
-        return;
-    }
+    data.firstCutVertex[edgeIndex] = delta.magnitudeSquared() > maxEdgeLength * maxEdgeLength ? 1 : 0;
+}
 
-    if (!subdivide)
+__global__ void createMarkedSubdivisionVertices(TetDeviceData data, int originalNodeCount)
+{
+    CUDA_THREAD_GUARD(edgeIndex, data.numEdges)
+    if (data.firstCutVertex[edgeIndex + 1] == data.firstCutVertex[edgeIndex])
     {
         data.edgeCutVertices[edgeIndex] = -1;
         return;
     }
 
+    const std::uint64_t edge = data.edges[edgeIndex];
+    const int id0 = static_cast<int>(edge >> 32);
+    const int id1 = static_cast<int>(edge & 0xffffffffu);
     const int vertexId = originalNodeCount + data.firstCutVertex[edgeIndex];
     data.nodes[vertexId] = (data.nodes[id0] + data.nodes[id1]) * 0.5f;
     data.edgeCutVertices[edgeIndex] = vertexId;
@@ -954,6 +1057,33 @@ __device__ int findPackedEdge(const DeviceBuffer<std::uint64_t>& edges, std::uin
     if (first >= static_cast<int>(edges.size) || edges.buffer[first] != target)
         return -1;
     return first;
+}
+
+__global__ void markOppositeBoundaryEdges(TetDeviceData data)
+{
+    CUDA_THREAD_GUARD(tetIndex, data.numTets)
+
+    int boundaryFaces[4];
+    int count = 0;
+    for (int face = 0; face < 4; ++face)
+    {
+        if (data.tetNeighbors[4 * tetIndex + face] < 0)
+            boundaryFaces[count++] = face;
+    }
+
+    // Face f is opposite local vertex 3-f. Splitting the edge between the two
+    // opposite vertices puts those two boundary faces in different child tets.
+    for (int i = 0; i < count; ++i)
+    {
+        for (int j = i + 1; j < count; ++j)
+        {
+            const int id0 = data.tetIndices[4 * tetIndex + (3 - boundaryFaces[i])];
+            const int id1 = data.tetIndices[4 * tetIndex + (3 - boundaryFaces[j])];
+            const int edgeIndex = findPackedEdge(data.edges, packEdge(id0, id1));
+            if (edgeIndex >= 0)
+                atomicExch(data.firstCutVertex.buffer + edgeIndex, 1);
+        }
+    }
 }
 
 // Fills local[0..9]: corners and edge cut verts (-1 if uncut). Returns cut mask.
@@ -1160,13 +1290,6 @@ void sortAndUnique(DeviceBuffer<T>& values, int& count)
     values.resize(static_cast<std::size_t>(count), true);
 }
 
-int readDeviceInt(const DeviceBuffer<int>& values, int index)
-{
-    int value = 0;
-    cudaCheck(cudaMemcpy(&value, values.buffer + index, sizeof(int), cudaMemcpyDeviceToHost));
-    return value;
-}
-
 void createSplitVoxelNodes(TetDeviceData& data)
 {
     const int cornerCount = data.numVoxels * 8;
@@ -1281,13 +1404,8 @@ void applyCutTemplates(TetDeviceData& data)
     data.numTets += numExtraTets;
 }
 
-void subdivideLongEdges(TetDeviceData& data, float maxEdgeLength)
+int createMarkedEdgeVertices(TetDeviceData& data)
 {
-    buildUniqueTetEdges(data);
-
-    data.firstCutVertex.resize(static_cast<std::size_t>(data.numEdges + 1), false);
-    data.firstCutVertex.setZero();
-    CUDA_LAUNCH(createSubdivisionVertices, data.numEdges, data, maxEdgeLength, data.numNodes, true);
     thrust::device_ptr<int> firstCutVertex(data.firstCutVertex.buffer);
     thrust::exclusive_scan(firstCutVertex, firstCutVertex + data.numEdges + 1, firstCutVertex);
 
@@ -1301,10 +1419,39 @@ void subdivideLongEdges(TetDeviceData& data, float maxEdgeLength)
         data.nodes.resize(static_cast<std::size_t>(originalNodeCount + numCutVertices), true);
         data.numNodes += numCutVertices;
     }
-    CUDA_LAUNCH(createSubdivisionVertices, data.numEdges, data, maxEdgeLength, originalNodeCount, false);
+    CUDA_LAUNCH(createMarkedSubdivisionVertices, data.numEdges, data, originalNodeCount);
 
     if (numCutVertices > 0)
         applyCutTemplates(data);
+    return numCutVertices;
+}
+
+void subdivideLongEdges(TetDeviceData& data, float maxEdgeLength)
+{
+    buildUniqueTetEdges(data);
+
+    data.firstCutVertex.resize(static_cast<std::size_t>(data.numEdges + 1), false);
+    data.firstCutVertex.setZero();
+    CUDA_LAUNCH(markLongEdges, data.numEdges, data, maxEdgeLength);
+    createMarkedEdgeVertices(data);
+}
+
+void separateBoundaryFaces(TetDeviceData& data)
+{
+    constexpr int kMaxPasses = 32;
+    for (int pass = 0; pass < kMaxPasses; ++pass)
+    {
+        buildUniqueTetEdges(data);
+        data.firstCutVertex.resize(static_cast<std::size_t>(data.numEdges + 1), false);
+        data.firstCutVertex.setZero();
+        CUDA_LAUNCH(markOppositeBoundaryEdges, data.numTets, data);
+        const int numEdgeSplits = createMarkedEdgeVertices(data);
+        if (numEdgeSplits == 0)
+            return;
+        if (!computeNeighbors(data))
+            throw std::runtime_error("Tet mesh has non-manifold faces after boundary edge splitting");
+    }
+    throw std::runtime_error("Boundary face separation did not converge");
 }
 
 void buildInputMeshBvh(TetDeviceData& data)
@@ -1331,8 +1478,11 @@ void projectSurfaceNodesToInputMesh(TetDeviceData& data, const Vec3* normals, fl
     if (data.numNodes <= 0 || data.numTets <= 0 || !normals)
         return;
 
+    data.moveOffsets.resize(static_cast<std::size_t>(data.numNodes), false);
+    data.moveOffsets.setZero();
     CUDA_LAUNCH(projectSurfaceNodes, data.numNodes, data, normals, kProjectionOffsetFraction * voxelSpacing,
                 kProjectionMaxDistanceFraction * voxelSpacing, kProjectionMaxStepFraction * voxelSpacing);
+    applyNodeMovesSafely(data);
 }
 
 void runOptimization(TetDeviceData& data, const TetrahedralizerParams& params)
@@ -1550,6 +1700,9 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
 
         if (!computeNeighbors(data))
             throw std::runtime_error("Tet mesh has non-manifold faces after tetrahedralization");
+
+        if (params.projectToInputMesh)
+            separateBoundaryFaces(data);
 
         runOptimization(data, params);
 
