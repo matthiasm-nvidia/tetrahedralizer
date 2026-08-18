@@ -7,7 +7,6 @@
 #include "utils/GpuBVH.h"
 #include "utils/Math.h"
 
-#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -28,6 +27,12 @@ constexpr std::uint64_t kCoordMask = (1ull << 21) - 1ull;
 // that grazes a cell can be rejected by floating point error and leave a pinhole
 // in the surface shell, which lets the exterior flood fill leak into the interior.
 constexpr float kVoxelOverlapMargin = 1.0e-3f;
+// Keep projected surface nodes slightly outside the input mesh.
+constexpr float kProjectionOffsetFraction = 0.1f;
+// Ignore surface hits farther away than this many voxels; they produce spikes.
+constexpr float kProjectionMaxDistanceFraction = 2.0f;
+// Largest distance a node may travel per projection pass.
+constexpr float kProjectionMaxStepFraction = 0.1f;
 
 __device__ __constant__ int kVoxelCorners[8][3] = {
     {0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0},
@@ -650,16 +655,25 @@ __global__ void smoothAccumulate(TetDeviceData data, float volumeFactor)
     }
 }
 
-__global__ void smoothApply(TetDeviceData data)
+__global__ void smoothApply(TetDeviceData data, const Vec3* normals)
 {
     CUDA_THREAD_GUARD(nodeIndex, data.numNodes)
     const int count = data.smoothCounts[nodeIndex];
     if (count == 0)
         return;
-    data.nodes[nodeIndex] += data.smoothOffsets[nodeIndex] / static_cast<float>(count);
+
+    Vec3 correction = data.smoothOffsets[nodeIndex] / static_cast<float>(count);
+    if (normals)
+    {
+        const Vec3 normal = normals[nodeIndex];
+        // Keep only tangential sliding on projected surface nodes.
+        if (normal.magnitudeSquared() > 0.0f)
+            correction -= normal * correction.dot(normal);
+    }
+    data.nodes[nodeIndex] += correction;
 }
 
-void smoothTets(TetDeviceData& data, int iterations, float volumeFactor)
+void smoothTets(TetDeviceData& data, int iterations, float volumeFactor, const Vec3* normals = nullptr)
 {
     if (iterations <= 0 || data.numTets <= 0 || data.numNodes <= 0)
         return;
@@ -671,7 +685,7 @@ void smoothTets(TetDeviceData& data, int iterations, float volumeFactor)
         data.smoothOffsets.setZero();
         data.smoothCounts.setZero();
         CUDA_LAUNCH(smoothAccumulate, data.numTets, data, volumeFactor);
-        CUDA_LAUNCH(smoothApply, data.numNodes, data);
+        CUDA_LAUNCH(smoothApply, data.numNodes, data, normals);
     }
     cudaCheck(cudaDeviceSynchronize());
 }
@@ -758,49 +772,110 @@ __global__ void computeTriangleBounds(TetDeviceData data)
         Vec4(max3(p0.x, p1.x, p2.x), max3(p0.y, p1.y, p2.y), max3(p0.z, p1.z, p2.z), 0.0f);
 }
 
-// Cut vertices stay at least this fraction of the edge away from both end nodes.
-constexpr float kMinCutT = 0.1f;
-
-// Walks the input mesh BVH and keeps the first cut along the edge, so an edge gets at most one cut.
-__device__ bool findEdgeCut(TetDeviceData& data, const Vec3& p0, const Vec3& p1, float& cutT)
+__global__ void accumulateSurfaceNormals(TetDeviceData data, Vec3* normals)
 {
-    const Ray ray(p0, p1 - p0);
+    CUDA_THREAD_GUARD(tetIndex, data.numTets)
+
+    const int* ids = data.tetIndices.buffer + 4 * tetIndex;
+    for (int face = 0; face < 4; ++face)
+    {
+        if (data.tetNeighbors[4 * tetIndex + face] >= 0)
+            continue;
+
+        const int i0 = ids[kTetFaces[face][0]];
+        const int i1 = ids[kTetFaces[face][1]];
+        const int i2 = ids[kTetFaces[face][2]];
+        const int iOpp = ids[6 - kTetFaces[face][0] - kTetFaces[face][1] - kTetFaces[face][2]];
+
+        const Vec3 p0 = data.nodes[i0];
+        Vec3 normal = (data.nodes[i1] - p0).cross(data.nodes[i2] - p0);
+        // Face winding points toward the opposite vertex for a positive tet; flip for outward.
+        if (normal.dot(data.nodes[iOpp] - p0) > 0.0f)
+            normal = -normal;
+
+        atomicAdd(&normals[i0].x, normal.x);
+        atomicAdd(&normals[i0].y, normal.y);
+        atomicAdd(&normals[i0].z, normal.z);
+        atomicAdd(&normals[i1].x, normal.x);
+        atomicAdd(&normals[i1].y, normal.y);
+        atomicAdd(&normals[i1].z, normal.z);
+        atomicAdd(&normals[i2].x, normal.x);
+        atomicAdd(&normals[i2].y, normal.y);
+        atomicAdd(&normals[i2].z, normal.z);
+    }
+}
+
+__global__ void normalizeSurfaceNormals(Vec3* normals, int numNodes)
+{
+    CUDA_THREAD_GUARD(nodeIndex, numNodes)
+    const Vec3 normal = normals[nodeIndex];
+    const float lengthSq = normal.magnitudeSquared();
+    if (lengthSq > 0.0f)
+        normals[nodeIndex] = normal * (1.0f / sqrtf(lengthSq));
+}
+
+__device__ bool rayHitsAabb(const Ray& ray, float minX, float minY, float minZ, float maxX, float maxY, float maxZ)
+{
+    float tEntry = -MaxFloat;
+    float tExit = MaxFloat;
+    const float origin[3] = {ray.orig.x, ray.orig.y, ray.orig.z};
+    const float direction[3] = {ray.dir.x, ray.dir.y, ray.dir.z};
+    const float boundsMin[3] = {minX, minY, minZ};
+    const float boundsMax[3] = {maxX, maxY, maxZ};
+
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        if (fabsf(direction[axis]) > 1.0e-20f)
+        {
+            const float t0 = (boundsMin[axis] - origin[axis]) / direction[axis];
+            const float t1 = (boundsMax[axis] - origin[axis]) / direction[axis];
+            tEntry = fmaxf(tEntry, fminf(t0, t1));
+            tExit = fminf(tExit, fmaxf(t0, t1));
+        }
+        else if (origin[axis] < boundsMin[axis] || origin[axis] > boundsMax[axis])
+        {
+            return false;
+        }
+    }
+
+    return tExit >= tEntry && tExit >= 0.0f;
+}
+
+// Unit ray direction, so maxT is a world distance.
+__device__ bool raycastInputMesh(const TetDeviceData& data, const Ray& ray, float maxT, float& minT, int& minTri)
+{
     int stack[64];
     stack[0] = data.triangleBvh.mRootNodes[0];
     int count = 1;
-    bool found = false;
-    cutT = MaxFloat;
+    minT = MaxFloat;
+    minTri = -1;
 
     while (count > 0)
     {
         const int nodeIndex = stack[--count];
         const PackedNodeHalf lower = data.triangleBvh.mNodeLowers[nodeIndex];
         const PackedNodeHalf upper = data.triangleBvh.mNodeUppers[nodeIndex];
-        const Bounds3 bounds(Vec3(lower.x, lower.y, lower.z), Vec3(upper.x, upper.y, upper.z));
-
-        float entry;
-        float exit;
-        if (!header_rayBoundsIntersection(ray, bounds, &entry, &exit) || exit < 0.0f || entry > 1.0f)
+        if (!rayHitsAabb(ray, lower.x, lower.y, lower.z, upper.x, upper.y, upper.z))
             continue;
 
         if (lower.b)
         {
             const int triangleIndex = static_cast<int>(lower.i);
-            const std::uint32_t i0 = data.meshIndices[3 * triangleIndex + 0];
-            const std::uint32_t i1 = data.meshIndices[3 * triangleIndex + 1];
-            const std::uint32_t i2 = data.meshIndices[3 * triangleIndex + 2];
+            const std::uint32_t i0 = data.meshIndices.buffer[3 * triangleIndex + 0];
+            const std::uint32_t i1 = data.meshIndices.buffer[3 * triangleIndex + 1];
+            const std::uint32_t i2 = data.meshIndices.buffer[3 * triangleIndex + 2];
             if (i0 >= data.meshVertices.size || i1 >= data.meshVertices.size || i2 >= data.meshVertices.size)
                 continue;
 
-            float t;
-            float u;
-            float v;
-            if (header_rayTriangleIntersection(
-                    ray, data.meshVertices[i0], data.meshVertices[i1], data.meshVertices[i2], t, u, v) &&
-                t > 1.0e-6f && t < 1.0f - 1.0e-6f && t < cutT)
+            float t = 0.0f;
+            float u = 0.0f;
+            float v = 0.0f;
+            if (header_rayTriangleIntersection(ray, data.meshVertices.buffer[i0], data.meshVertices.buffer[i1],
+                                               data.meshVertices.buffer[i2], t, u, v) &&
+                t >= 1.0e-6f && t <= maxT && t < minT)
             {
-                cutT = t;
-                found = true;
+                minT = t;
+                minTri = triangleIndex;
             }
         }
         else if (count <= 62)
@@ -810,59 +885,55 @@ __device__ bool findEdgeCut(TetDeviceData& data, const Vec3& p0, const Vec3& p1,
         }
     }
 
-    return found;
+    return minTri >= 0;
 }
 
-__global__ void createCutVertices(TetDeviceData data, int originalNodeCount, bool countOnly)
+__global__ void projectSurfaceNodes(TetDeviceData data, const Vec3* normals, float offset, float maxDistance,
+                                    float maxStep)
+{
+    CUDA_THREAD_GUARD(nodeIndex, data.numNodes)
+
+    const Vec3 normal = normals[nodeIndex];
+    if (normal.magnitudeSquared() == 0.0f)
+        return;
+
+    const Vec3 origin = data.nodes[nodeIndex];
+    float minT = 0.0f;
+    int minTri = -1;
+    float distance = 0.0f;
+
+    // Prefer the opposite of the outward normal (approach from outside); fall back to outward.
+    if (raycastInputMesh(data, Ray(origin, -normal), maxDistance, minT, minTri))
+        distance = offset - minT;
+    else if (raycastInputMesh(data, Ray(origin, normal), maxDistance, minT, minTri))
+        distance = minT + offset;
+    else
+        return;
+
+    data.nodes[nodeIndex] = origin + normal * fminf(fmaxf(distance, -maxStep), maxStep);
+}
+
+__global__ void createSubdivisionVertices(TetDeviceData data, float maxEdgeLength, int originalNodeCount,
+                                          bool countOnly)
 {
     CUDA_THREAD_GUARD(edgeIndex, data.numEdges)
     const std::uint64_t edge = data.edges[edgeIndex];
     const int id0 = static_cast<int>(edge >> 32);
     const int id1 = static_cast<int>(edge & 0xffffffffu);
-
-    float cutT;
-    const bool cut = findEdgeCut(data, data.nodes[id0], data.nodes[id1], cutT);
+    const Vec3 delta = data.nodes[id1] - data.nodes[id0];
+    const bool subdivide = delta.magnitudeSquared() > maxEdgeLength * maxEdgeLength;
     if (countOnly)
     {
-        data.firstCutVertex[edgeIndex] = cut ? 1 : 0;
+        data.firstCutVertex[edgeIndex] = subdivide ? 1 : 0;
         return;
     }
 
-    if (!cut)
+    if (!subdivide)
     {
         data.edgeCutVertices[edgeIndex] = -1;
         return;
     }
 
-    // Keep the cut away from the edge ends so the child tets do not get degenerate.
-    cutT = fminf(fmaxf(cutT, kMinCutT), 1.0f - kMinCutT);
-
-    const int vertexId = originalNodeCount + data.firstCutVertex[edgeIndex];
-    data.nodes[vertexId] = data.nodes[id0] + (data.nodes[id1] - data.nodes[id0]) * cutT;
-    data.edgeCutVertices[edgeIndex] = vertexId;
-}
-
-// Midpoint cuts for edges marked in edgeCutFlags (1 = cut, 0 = skip). Used by tests.
-__global__ void createMarkedCutVertices(TetDeviceData data, const int* edgeCutFlags, int originalNodeCount,
-                                        bool countOnly)
-{
-    CUDA_THREAD_GUARD(edgeIndex, data.numEdges)
-    const bool cut = edgeCutFlags[edgeIndex] != 0;
-    if (countOnly)
-    {
-        data.firstCutVertex[edgeIndex] = cut ? 1 : 0;
-        return;
-    }
-
-    if (!cut)
-    {
-        data.edgeCutVertices[edgeIndex] = -1;
-        return;
-    }
-
-    const std::uint64_t edge = data.edges[edgeIndex];
-    const int id0 = static_cast<int>(edge >> 32);
-    const int id1 = static_cast<int>(edge & 0xffffffffu);
     const int vertexId = originalNodeCount + data.firstCutVertex[edgeIndex];
     data.nodes[vertexId] = (data.nodes[id0] + data.nodes[id1]) * 0.5f;
     data.edgeCutVertices[edgeIndex] = vertexId;
@@ -998,40 +1069,6 @@ __global__ void splitTets(TetDeviceData data, bool countOnly)
             data.tetIndices[4 * outTet + corner] = local[localId];
         }
     }
-}
-
-// Classify each tet from the signed side of the closest input triangle.
-// Consistently outward-facing input triangles make inside=true.
-__global__ void markKeptTets(TetDeviceData data, int* keptTetOffsets)
-{
-    CUDA_THREAD_GUARD(tetIndex, data.numTets)
-
-    Vec3 center(Zero);
-    for (int corner = 0; corner < 4; ++corner)
-        center += data.nodes[data.tetIndices[4 * tetIndex + corner]];
-    center *= 0.25f;
-
-    int closestTri = -1;
-    Vec3 bary(Zero);
-    Vec3 closestPos(Zero);
-    bool inside = false;
-    header_queryClosestPoint(data.triangleBvh, center, 0.0f, data.meshVertices.buffer,
-                             reinterpret_cast<int*>(data.meshIndices.buffer), closestTri, bary, closestPos, inside);
-
-    // An inconclusive query keeps the tet instead of deleting geometry.
-    keptTetOffsets[tetIndex] = closestTri < 0 || inside ? 1 : 0;
-}
-
-__global__ void compactKeptTets(TetDeviceData data, const int* keptTetOffsets, int* compactedTetIndices)
-{
-    CUDA_THREAD_GUARD(tetIndex, data.numTets)
-
-    if (keptTetOffsets[tetIndex + 1] == keptTetOffsets[tetIndex])
-        return;
-
-    const int outputTet = keptTetOffsets[tetIndex];
-    for (int corner = 0; corner < 4; ++corner)
-        compactedTetIndices[4 * outputTet + corner] = data.tetIndices[4 * tetIndex + corner];
 }
 
 __global__ void stampGeomCells(TetDeviceData data)
@@ -1244,44 +1281,13 @@ void applyCutTemplates(TetDeviceData& data)
     data.numTets += numExtraTets;
 }
 
-void carveOutsideTets(TetDeviceData& data)
+void subdivideLongEdges(TetDeviceData& data, float maxEdgeLength)
 {
-    if (data.numTets <= 0)
-        return;
-
-    DeviceBuffer<int> keptTetOffsets;
-    keptTetOffsets.resize(static_cast<std::size_t>(data.numTets + 1), false);
-    keptTetOffsets.setZero();
-    CUDA_LAUNCH(markKeptTets, data.numTets, data, keptTetOffsets.buffer);
-
-    thrust::device_ptr<int> offsets(keptTetOffsets.buffer);
-    thrust::exclusive_scan(offsets, offsets + data.numTets + 1, offsets);
-    const int keptTetCount = readDeviceInt(keptTetOffsets, data.numTets);
-
-    if (keptTetCount < data.numTets)
-    {
-        DeviceBuffer<int> compactedTetIndices;
-        compactedTetIndices.resize(static_cast<std::size_t>(keptTetCount) * 4, false);
-        CUDA_LAUNCH(compactKeptTets, data.numTets, data, keptTetOffsets.buffer, compactedTetIndices.buffer);
-        data.tetIndices.swap(compactedTetIndices);
-        compactedTetIndices.free();
-        data.numTets = keptTetCount;
-    }
-
-    keptTetOffsets.free();
-}
-
-void applyMarkedEdgeCuts(TetDeviceData& data, const std::vector<int>& edgeCutFlags)
-{
-    if (static_cast<int>(edgeCutFlags.size()) != data.numEdges)
-        throw std::invalid_argument("Edge cut flag count must match unique edge count");
-
-    DeviceBuffer<int> flags;
-    flags.set(edgeCutFlags);
+    buildUniqueTetEdges(data);
 
     data.firstCutVertex.resize(static_cast<std::size_t>(data.numEdges + 1), false);
     data.firstCutVertex.setZero();
-    CUDA_LAUNCH(createMarkedCutVertices, data.numEdges, data, flags.buffer, data.numNodes, true);
+    CUDA_LAUNCH(createSubdivisionVertices, data.numEdges, data, maxEdgeLength, data.numNodes, true);
     thrust::device_ptr<int> firstCutVertex(data.firstCutVertex.buffer);
     thrust::exclusive_scan(firstCutVertex, firstCutVertex + data.numEdges + 1, firstCutVertex);
 
@@ -1295,11 +1301,71 @@ void applyMarkedEdgeCuts(TetDeviceData& data, const std::vector<int>& edgeCutFla
         data.nodes.resize(static_cast<std::size_t>(originalNodeCount + numCutVertices), true);
         data.numNodes += numCutVertices;
     }
-    CUDA_LAUNCH(createMarkedCutVertices, data.numEdges, data, flags.buffer, originalNodeCount, false);
-    flags.free();
+    CUDA_LAUNCH(createSubdivisionVertices, data.numEdges, data, maxEdgeLength, originalNodeCount, false);
 
     if (numCutVertices > 0)
         applyCutTemplates(data);
+}
+
+void buildInputMeshBvh(TetDeviceData& data)
+{
+    data.triangleBoundsLowers.resize(static_cast<std::size_t>(data.numTriangles), false);
+    data.triangleBoundsUppers.resize(static_cast<std::size_t>(data.numTriangles), false);
+    CUDA_LAUNCH(computeTriangleBounds, data.numTriangles, data);
+
+    BVHBuilderGPU bvhBuilder;
+    bvhBuilder.build(data.triangleBvh, data.triangleBoundsLowers.buffer, data.triangleBoundsUppers.buffer,
+                     data.numTriangles);
+}
+
+void computeSurfaceNormals(TetDeviceData& data, DeviceBuffer<Vec3>& normals)
+{
+    normals.resize(static_cast<std::size_t>(data.numNodes), false);
+    normals.setZero();
+    CUDA_LAUNCH(accumulateSurfaceNormals, data.numTets, data, normals.buffer);
+    CUDA_LAUNCH(normalizeSurfaceNormals, data.numNodes, normals.buffer, data.numNodes);
+}
+
+void projectSurfaceNodesToInputMesh(TetDeviceData& data, const Vec3* normals, float voxelSpacing)
+{
+    if (data.numNodes <= 0 || data.numTets <= 0 || !normals)
+        return;
+
+    CUDA_LAUNCH(projectSurfaceNodes, data.numNodes, data, normals, kProjectionOffsetFraction * voxelSpacing,
+                kProjectionMaxDistanceFraction * voxelSpacing, kProjectionMaxStepFraction * voxelSpacing);
+}
+
+void runOptimization(TetDeviceData& data, const TetrahedralizerParams& params)
+{
+    const bool project = params.projectToInputMesh;
+
+    if (params.numOptimizationIterations <= 0)
+    {
+        if (project)
+        {
+            DeviceBuffer<Vec3> normals;
+            computeSurfaceNormals(data, normals);
+            projectSurfaceNodesToInputMesh(data, normals.buffer, params.voxelSpacing);
+            normals.free();
+        }
+        return;
+    }
+
+    DeviceBuffer<Vec3> normals;
+    for (int iteration = 0; iteration < params.numOptimizationIterations; ++iteration)
+    {
+        if (project)
+        {
+            computeSurfaceNormals(data, normals);
+            projectSurfaceNodesToInputMesh(data, normals.buffer, params.voxelSpacing);
+            smoothTets(data, 1, params.volumeFactor, normals.buffer);
+        }
+        else
+        {
+            smoothTets(data, 1, params.volumeFactor, nullptr);
+        }
+    }
+    normals.free();
 }
 
 void uploadMeshFromHost(TetDeviceData& data, const Tetrahedralizer& mesh)
@@ -1330,10 +1396,12 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
         throw std::invalid_argument("Voxel spacing must be finite and greater than zero");
     if (params.holeCloseRadius < 0)
         throw std::invalid_argument("Hole close radius must be non-negative");
-    if (params.numSmoothingIterations < 0)
-        throw std::invalid_argument("Smoothing iteration count must be non-negative");
+    if (params.numOptimizationIterations < 0)
+        throw std::invalid_argument("Optimization iteration count must be non-negative");
     if (!(params.volumeFactor > 0.0f) || !std::isfinite(params.volumeFactor))
         throw std::invalid_argument("Volume factor must be finite and greater than zero");
+    if (!(params.maxEdgeLength >= 0.0f) || !std::isfinite(params.maxEdgeLength))
+        throw std::invalid_argument("Maximum edge length must be finite and non-negative");
     if (mesh_indices.size() / 3 > static_cast<std::size_t>(std::numeric_limits<int>::max()))
         throw std::runtime_error("Triangle count exceeds the supported range");
 
@@ -1447,16 +1515,8 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
         data.numVoxels = solidVoxelCount;
         sortAndUnique(data.voxels, data.numVoxels);
 
-        if (params.splitVoxels || params.cutWithInputMesh)
-        {
-            data.triangleBoundsLowers.resize(static_cast<std::size_t>(data.numTriangles), false);
-            data.triangleBoundsUppers.resize(static_cast<std::size_t>(data.numTriangles), false);
-            CUDA_LAUNCH(computeTriangleBounds, data.numTriangles, data);
-
-            BVHBuilderGPU bvhBuilder;
-            bvhBuilder.build(data.triangleBvh, data.triangleBoundsLowers.buffer, data.triangleBoundsUppers.buffer,
-                             data.numTriangles);
-        }
+        if (params.splitVoxels || params.projectToInputMesh)
+            buildInputMeshBvh(data);
 
         if (data.numVoxels > std::numeric_limits<int>::max() / 8)
             throw std::runtime_error("Voxel corner count exceeds the supported range");
@@ -1483,47 +1543,15 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
         data.tetIndices.resize(static_cast<std::size_t>(data.numTets) * 4, false);
         CUDA_LAUNCH(createTets, data.numVoxels, data, params.splitVoxels);
 
-        smoothTets(data, params.numSmoothingIterations, params.volumeFactor);
-
-        if (params.cutWithInputMesh)
-        {
-            if (data.numTets > std::numeric_limits<int>::max() / 6)
-                throw std::runtime_error("Tet edge count exceeds the supported range");
-
-            int edgeCount = data.numTets * 6;
-            data.edges.resize(static_cast<std::size_t>(edgeCount), false);
-            CUDA_LAUNCH(createTetEdges, edgeCount, data);
-            sortAndUnique(data.edges, edgeCount);
-            data.numEdges = edgeCount;
-
-            data.firstCutVertex.resize(static_cast<std::size_t>(data.numEdges + 1), false);
-            data.firstCutVertex.setZero();
-            CUDA_LAUNCH(createCutVertices, data.numEdges, data, data.numNodes, true);
-            thrust::device_ptr<int> firstCutVertex(data.firstCutVertex.buffer);
-            thrust::exclusive_scan(firstCutVertex, firstCutVertex + data.numEdges + 1, firstCutVertex);
-
-            const int numCutVertices = readDeviceInt(data.firstCutVertex, data.numEdges);
-            data.edgeCutVertices.resize(static_cast<std::size_t>(data.numEdges), false);
-            const int originalNodeCount = data.numNodes;
-            if (numCutVertices > 0)
-            {
-                if (numCutVertices > std::numeric_limits<int>::max() - originalNodeCount)
-                    throw std::runtime_error("Cut vertex count exceeds the supported range");
-                data.nodes.resize(static_cast<std::size_t>(originalNodeCount + numCutVertices), true);
-                data.numNodes += numCutVertices;
-            }
-            CUDA_LAUNCH(createCutVertices, data.numEdges, data, originalNodeCount, false);
-
-            if (numCutVertices > 0)
-                applyCutTemplates(data);
-
-            carveOutsideTets(data);
-        }
+        if (params.maxEdgeLength > 0.0f)
+            subdivideLongEdges(data, params.maxEdgeLength);
 
         cudaCheck(cudaDeviceSynchronize());
 
         if (!computeNeighbors(data))
             throw std::runtime_error("Tet mesh has non-manifold faces after tetrahedralization");
+
+        runOptimization(data, params);
 
         data.nodes.get(output.nodes);
         data.tetIndices.get(output.tet_indices);
@@ -1537,82 +1565,22 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
     }
 }
 
-void GpuTetrahedralizer::cutRandomEdges(Tetrahedralizer& mesh, float probability, unsigned seed)
+void GpuTetrahedralizer::subdivide(Tetrahedralizer& mesh, float maxEdgeLength)
 {
-    if (!(probability >= 0.0f) || !(probability <= 1.0f) || !std::isfinite(probability))
-        throw std::invalid_argument("Cut probability must be in [0, 1]");
+    if (!(maxEdgeLength >= 0.0f) || !std::isfinite(maxEdgeLength))
+        throw std::invalid_argument("Maximum edge length must be finite and non-negative");
+    if (maxEdgeLength == 0.0f)
+        return;
 
     TetDeviceData data;
     try
     {
         uploadMeshFromHost(data, mesh);
-        buildUniqueTetEdges(data);
-
-        std::vector<int> flags(static_cast<std::size_t>(data.numEdges), 0);
-        unsigned state = seed ? seed : 1u;
-        for (int i = 0; i < data.numEdges; ++i)
-        {
-            state = state * 1664525u + 1013904223u;
-            const float u = static_cast<float>(state >> 8) * (1.0f / 16777216.0f);
-            flags[static_cast<std::size_t>(i)] = u < probability ? 1 : 0;
-        }
-
-        applyMarkedEdgeCuts(data, flags);
+        subdivideLongEdges(data, maxEdgeLength);
 
         cudaCheck(cudaDeviceSynchronize());
         if (!computeNeighbors(data))
-            throw std::runtime_error("Tet mesh has non-manifold faces after random cuts");
-
-        downloadMeshToHost(data, mesh);
-        data.free();
-    }
-    catch (...)
-    {
-        data.free();
-        throw;
-    }
-}
-
-void GpuTetrahedralizer::cutSingleTetByMask(Tetrahedralizer& mesh, int mask)
-{
-    if (mask < 0 || mask > 63)
-        throw std::invalid_argument("Edge-cut mask must be in [0, 63]");
-    if (mesh.numTets() != 1 || mesh.tet_indices.size() != 4 || mesh.nodes.size() < 4)
-        throw std::invalid_argument("cutSingleTetByMask requires a mesh with exactly one tetrahedron");
-
-    // Same edge order as tet_cut / device kTetEdges.
-    static constexpr int kEdges[6][2] = {
-        {0, 1}, {1, 2}, {2, 0}, {0, 3}, {1, 3}, {2, 3},
-    };
-
-    TetDeviceData data;
-    try
-    {
-        uploadMeshFromHost(data, mesh);
-        buildUniqueTetEdges(data);
-
-        std::vector<std::uint64_t> hostEdges;
-        data.edges.get(hostEdges);
-
-        std::vector<int> flags(static_cast<std::size_t>(data.numEdges), 0);
-        const int* ids = mesh.tet_indices.data();
-        for (int e = 0; e < 6; ++e)
-        {
-            if (((mask >> e) & 1) == 0)
-                continue;
-
-            const std::uint64_t packed = packEdge(ids[kEdges[e][0]], ids[kEdges[e][1]]);
-            const auto it = std::lower_bound(hostEdges.begin(), hostEdges.end(), packed);
-            if (it == hostEdges.end() || *it != packed)
-                throw std::runtime_error("Failed to map single-tet edge mask to unique edges");
-            flags[static_cast<std::size_t>(it - hostEdges.begin())] = 1;
-        }
-
-        applyMarkedEdgeCuts(data, flags);
-
-        cudaCheck(cudaDeviceSynchronize());
-        if (!computeNeighbors(data))
-            throw std::runtime_error("Tet mesh has non-manifold faces after mask cut");
+            throw std::runtime_error("Tet mesh has non-manifold faces after subdivision");
 
         downloadMeshToHost(data, mesh);
         data.free();

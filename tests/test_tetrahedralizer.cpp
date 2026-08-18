@@ -157,14 +157,6 @@ void makeNearbySheets(std::vector<Vec3>& vertices, std::vector<std::uint32_t>& i
     indices = {0, 1, 2, 3, 4, 5, 6, 7, 8};
 }
 
-void makeReferenceTet(Tetrahedralizer& mesh)
-{
-    mesh.clear();
-    mesh.nodes = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
-    mesh.tet_indices = {0, 1, 2, 3};
-    mesh.tet_neighbors = {-1, -1, -1, -1};
-}
-
 Tetrahedralizer makeVoxelizedCube(int cellsPerSide)
 {
     std::vector<Vec3> vertices;
@@ -176,8 +168,8 @@ Tetrahedralizer makeVoxelizedCube(int cellsPerSide)
     TetrahedralizerParams params;
     params.voxelSpacing = 1.0f;
     params.holeCloseRadius = 0;
-    params.numSmoothingIterations = 0;
-    params.cutWithInputMesh = false;
+    params.numOptimizationIterations = 0;
+    params.projectToInputMesh = false;
 
     Tetrahedralizer mesh;
     mesh.create(vertices, indices, params);
@@ -279,7 +271,9 @@ MU_TEST(test_split_voxels_keeps_interior_connected)
 
     TetrahedralizerParams params;
     params.voxelSpacing = 1.0f;
-    params.numSmoothingIterations = 0;
+    params.numOptimizationIterations = 0;
+    params.projectToInputMesh = false;
+    params.splitVoxels = false;
 
     Tetrahedralizer unsplit;
     unsplit.create(vertices, indices, params);
@@ -309,7 +303,9 @@ MU_TEST(test_split_voxels_disconnects_nearby_sheets)
 
     TetrahedralizerParams params;
     params.voxelSpacing = 1.0f;
-    params.numSmoothingIterations = 0;
+    params.numOptimizationIterations = 0;
+    params.projectToInputMesh = false;
+    params.splitVoxels = false;
 
     Tetrahedralizer merged;
     merged.create(vertices, indices, params);
@@ -329,69 +325,107 @@ MU_TEST(test_split_voxels_disconnects_nearby_sheets)
     mu_check(std::fabs(stats.volume - analyse(merged).volume) < 1.0e-4f);
 }
 
-MU_TEST(test_random_cuts_preserve_manifold_volume)
+MU_TEST(test_subdivision_preserves_manifold_volume)
 {
     Tetrahedralizer mesh = makeVoxelizedCube(3);
     const MeshStats before = analyse(mesh);
     mu_assert_int_eq(0, before.badTets);
 
-    const float probabilities[3] = {0.35f, 0.15f, 0.15f};
-    for (int round = 0; round < 3; ++round)
-    {
-        mesh.cutRandomEdges(probabilities[round], static_cast<unsigned>(1000 + round));
-        const MeshStats stats = analyse(mesh);
-        mu_assert_int_eq(0, stats.badTets);
-        mu_assert_int_eq(0, stats.overusedFaces);
-        mu_assert_int_eq(0, stats.neighborMismatches);
-        mu_check(std::fabs(stats.volume - before.volume) < 1.0e-3f);
-    }
-}
-
-MU_TEST(test_all_masks_on_single_tet)
-{
-    constexpr float kTetVol = 1.0f / 6.0f;
-    int failures = 0;
-
-    for (int mask = 0; mask < 64; ++mask)
-    {
-        Tetrahedralizer mesh;
-        makeReferenceTet(mesh);
-        mesh.cutSingleTetByMask(mask);
-
-        const MeshStats stats = analyse(mesh);
-        const bool ok = stats.badTets == 0 && stats.overusedFaces == 0 && stats.neighborMismatches == 0 &&
-                        std::fabs(stats.volume - kTetVol) < 1.0e-5f;
-        if (!ok)
-            ++failures;
-    }
-
-    mu_assert_int_eq(0, failures);
-}
-
-MU_TEST(test_surface_cut_smoke)
-{
-    std::vector<Vec3> vertices;
-    std::vector<std::uint32_t> indices;
-    makeCube(vertices, indices, 2.5f);
-
-    TetrahedralizerParams params;
-    params.voxelSpacing = 1.0f;
-    params.numSmoothingIterations = 0;
-
-    Tetrahedralizer uncutMesh;
-    uncutMesh.create(vertices, indices, params);
-
-    params.cutWithInputMesh = true;
-    Tetrahedralizer mesh;
-    mesh.create(vertices, indices, params);
-    mu_check(!mesh.empty());
+    const std::size_t nodeCount = mesh.nodes.size();
+    const int tetCount = mesh.numTets();
+    mesh.subdivide(1.1f);
 
     const MeshStats stats = analyse(mesh);
     mu_assert_int_eq(0, stats.badTets);
     mu_assert_int_eq(0, stats.overusedFaces);
     mu_assert_int_eq(0, stats.neighborMismatches);
-    mu_check(mesh.numTets() < uncutMesh.numTets());
-    mu_check(stats.volume < analyse(uncutMesh).volume);
+    mu_check(mesh.nodes.size() > nodeCount);
+    mu_check(mesh.numTets() > tetCount);
+    mu_check(std::fabs(stats.volume - before.volume) < 5.0e-3f);
+}
+
+MU_TEST(test_max_edge_length_parameter)
+{
+    std::vector<Vec3> vertices;
+    std::vector<std::uint32_t> indices;
+    makeCube(vertices, indices, 3.0f);
+
+    TetrahedralizerParams params;
+    params.voxelSpacing = 1.0f;
+    params.numOptimizationIterations = 0;
+    params.projectToInputMesh = false;
+
+    Tetrahedralizer baseMesh;
+    baseMesh.create(vertices, indices, params);
+
+    params.maxEdgeLength = 1.1f;
+    Tetrahedralizer subdivided;
+    subdivided.create(vertices, indices, params);
+    mu_check(!subdivided.empty());
+
+    const MeshStats stats = analyse(subdivided);
+    mu_assert_int_eq(0, stats.badTets);
+    mu_assert_int_eq(0, stats.overusedFaces);
+    mu_assert_int_eq(0, stats.neighborMismatches);
+    mu_check(subdivided.nodes.size() > baseMesh.nodes.size());
+    mu_check(subdivided.numTets() > baseMesh.numTets());
+    mu_check(std::fabs(stats.volume - analyse(baseMesh).volume) < 5.0e-3f);
+}
+
+MU_TEST(test_project_to_input_mesh_smoke)
+{
+    std::vector<Vec3> vertices;
+    std::vector<std::uint32_t> indices;
+    makeCube(vertices, indices, 3.0f);
+
+    TetrahedralizerParams params;
+    params.voxelSpacing = 1.0f;
+    params.numOptimizationIterations = 0;
+    params.projectToInputMesh = false;
+
+    Tetrahedralizer baseMesh;
+    baseMesh.create(vertices, indices, params);
+
+    params.projectToInputMesh = true;
+    Tetrahedralizer projected;
+    projected.create(vertices, indices, params);
+    mu_check(!projected.empty());
+    mu_assert_int_eq(baseMesh.numTets(), projected.numTets());
+    mu_assert_int_eq(static_cast<int>(baseMesh.nodes.size()), static_cast<int>(projected.nodes.size()));
+
+    int moved = 0;
+    for (std::size_t i = 0; i < projected.nodes.size(); ++i)
+    {
+        if ((projected.nodes[i] - baseMesh.nodes[i]).magnitudeSquared() > 1.0e-12f)
+            ++moved;
+    }
+    mu_check(moved > 0);
+
+    const MeshStats stats = analyse(projected);
+    mu_assert_int_eq(0, stats.overusedFaces);
+    mu_assert_int_eq(0, stats.neighborMismatches);
+}
+
+MU_TEST(test_optimization_loop_smoke)
+{
+    std::vector<Vec3> vertices;
+    std::vector<std::uint32_t> indices;
+    makeCube(vertices, indices, 3.0f);
+
+    TetrahedralizerParams params;
+    params.voxelSpacing = 1.0f;
+    params.projectToInputMesh = true;
+    params.numOptimizationIterations = 5;
+    params.volumeFactor = 0.8f;
+
+    Tetrahedralizer mesh;
+    mesh.create(vertices, indices, params);
+    mu_check(!mesh.empty());
+
+    const MeshStats stats = analyse(mesh);
+    mu_assert_int_eq(0, stats.overusedFaces);
+    mu_assert_int_eq(0, stats.neighborMismatches);
+    mu_check(stats.boundaryFaces > 0);
 }
 
 MU_TEST_SUITE(test_suite)
@@ -400,9 +434,10 @@ MU_TEST_SUITE(test_suite)
     MU_RUN_TEST(test_voxelized_cube_base_mesh);
     MU_RUN_TEST(test_split_voxels_keeps_interior_connected);
     MU_RUN_TEST(test_split_voxels_disconnects_nearby_sheets);
-    MU_RUN_TEST(test_random_cuts_preserve_manifold_volume);
-    MU_RUN_TEST(test_all_masks_on_single_tet);
-    MU_RUN_TEST(test_surface_cut_smoke);
+    MU_RUN_TEST(test_subdivision_preserves_manifold_volume);
+    MU_RUN_TEST(test_max_edge_length_parameter);
+    MU_RUN_TEST(test_project_to_input_mesh_smoke);
+    MU_RUN_TEST(test_optimization_loop_smoke);
 }
 
 int main()

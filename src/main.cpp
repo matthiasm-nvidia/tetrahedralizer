@@ -33,10 +33,11 @@ struct AppState
     float scene_scale = 1.0f;
     float voxel_spacing = 0.1f;
     int hole_close_radius = 0;
-    int smoothing_iterations = 0;
+    int optimization_iterations = 15;
     float volume_factor = 0.8f;
-    bool split_voxels = false;
-    bool cut_with_input_mesh = false;
+    bool split_voxels = true;
+    float max_edge_length = 0.0f;
+    bool project_to_input_mesh = true;
     // Percentage of the mesh bounds cut away along each axis, 0 disables the clip plane.
     int clip[3] = {0, 0, 0};
     int mouse_x = 0;
@@ -94,18 +95,20 @@ bool imguiWantsMouse()
 }
 
 void createTets(const tetrahedralizer::TriMesh& mesh, float voxel_spacing, int hole_close_radius,
-                int smoothing_iterations, float volume_factor, bool split_voxels, bool cut_with_input_mesh,
-                tetrahedralizer::Tetrahedralizer& tets, tetrahedralizer::TetMeshRenderer& tet_renderer)
+                int optimization_iterations, float volume_factor, bool split_voxels, float max_edge_length,
+                bool project_to_input_mesh, tetrahedralizer::Tetrahedralizer& tets,
+                tetrahedralizer::TetMeshRenderer& tet_renderer)
 {
     try
     {
         tetrahedralizer::TetrahedralizerParams params;
         params.voxelSpacing = voxel_spacing;
         params.holeCloseRadius = hole_close_radius;
-        params.numSmoothingIterations = smoothing_iterations;
+        params.numOptimizationIterations = optimization_iterations;
         params.volumeFactor = volume_factor;
         params.splitVoxels = split_voxels;
-        params.cutWithInputMesh = cut_with_input_mesh;
+        params.maxEdgeLength = max_edge_length;
+        params.projectToInputMesh = project_to_input_mesh;
         tets.create(mesh.positions, mesh.triangle_indices, params);
         tet_renderer.upload(tets.nodes, tets.tet_indices);
     }
@@ -362,13 +365,15 @@ int main()
             viewer::imgui_widgets::section_heading("Tets");
             viewer::imgui_widgets::slider_float("Voxel size", &state.voxel_spacing, 0.01f, 0.1f);
             viewer::imgui_widgets::slider_int("Hole close", &state.hole_close_radius, 0, 5);
-            viewer::imgui_widgets::slider_int("Smooth iters", &state.smoothing_iterations, 0, 50);
+            viewer::imgui_widgets::slider_int("Opt iters", &state.optimization_iterations, 0, 50);
             viewer::imgui_widgets::slider_float("Volume factor", &state.volume_factor, 0.1f, 1.5f);
             viewer::imgui_widgets::checkbox("Split voxels", &state.split_voxels);
-            viewer::imgui_widgets::checkbox("Cut with input mesh", &state.cut_with_input_mesh);
+            viewer::imgui_widgets::slider_float("Max edge length", &state.max_edge_length, 0.0f, 0.2f);
+            viewer::imgui_widgets::checkbox("Project to mesh", &state.project_to_input_mesh);
             if (viewer::imgui_widgets::button_full_width("Create tets"))
-                createTets(mesh, state.voxel_spacing, state.hole_close_radius, state.smoothing_iterations,
-                           state.volume_factor, state.split_voxels, state.cut_with_input_mesh, tets, tet_renderer);
+                createTets(mesh, state.voxel_spacing, state.hole_close_radius, state.optimization_iterations,
+                           state.volume_factor, state.split_voxels, state.max_edge_length,
+                           state.project_to_input_mesh, tets, tet_renderer);
             viewer::imgui_widgets::checkbox("Show tets", &show_tets);
             viewer::imgui_widgets::checkbox("Tet wireframe", &tet_wireframe);
             if (!tet_wireframe)

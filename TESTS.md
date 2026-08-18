@@ -1,6 +1,6 @@
 # Tests
 
-GPU / host regression checks for tetrahedralization, edge cutting, and face neighbors.
+GPU / host regression checks for tetrahedralization, edge subdivision, and face neighbors.
 Run with:
 
 ```bat
@@ -20,8 +20,6 @@ Framework: `include/third_party/minunit.h`.
 ## Fixtures
 
 - **Cube mesh** — axis-aligned cube of side \(N\) with `voxelSpacing = 1` (same role as tet-cut’s block). Exact solid-cell count depends on surface stamping; tests assert volume ≈ \(N^3\) and a 5-tet decomposition rather than a fixed tet count.
-- **Reference tet** — corners `(0,0,0)`, `(1,0,0)`, `(0,1,0)`, `(0,0,1)` for exhaustive mask tests.
-- **Forced edge cuts** — `Tetrahedralizer::cutRandomEdges` / `cutSingleTetByMask` mark unique tet edges at midpoints, then run the same Steiner + template split path as surface cutting (no BVH). Needed so random cuts exercise interior edges, not only surface hits.
 
 ## Suites
 
@@ -55,22 +53,27 @@ Voxelize two nearby parallel triangles in face-adjacent cells. With `splitVoxels
 - Additional node IDs keep the sheets topologically disconnected
 - Tet volumes, face usage, and neighbors remain valid
 
-### `test_random_cuts_preserve_manifold_volume`
+### `test_subdivision_preserves_manifold_volume`
 
-Start from the 3×3×3 voxel mesh, then three rounds of `cutRandomEdges` (probabilities 0.35, 0.15, 0.15). After each round:
+Start from the 3×3×3 voxel mesh and call `subdivide(1.1)`. Checks:
 
 - Manifold faces / valid neighbors
 - Positive volumes
 - Total volume preserved (float tolerance)
+- Node and tet counts increase
 
-### `test_all_masks_on_single_tet`
+### `test_max_edge_length_parameter`
 
-For each mask in \(0..63\), cut the reference tet with that edge mask and check volume \(1/6\), conformity, and neighbors.
+Run the full create pipeline with `maxEdgeLength = 1.1`. Checks manifold / positive volumes, preserved volume, and increased node and tet counts relative to the unsubdivided mesh.
 
-### `test_surface_cut_smoke`
+### `test_project_to_input_mesh_smoke`
 
-Full pipeline: voxelize the cube with `cutWithInputMesh`, cutting against an extra plane through the cube. Checks manifold / positive volumes and that tet count did not shrink below the uncut block.
+Voxelize a cube with `projectToInputMesh`. Topology (tet/node counts, neighbors) stays the same; at least some nodes move.
+
+### `test_optimization_loop_smoke`
+
+Voxelize a cube with `projectToInputMesh` and `numOptimizationIterations = 5`. Checks the mesh stays manifold with boundary faces after project→smooth loops.
 
 ## Adding tests
 
-Prefer checks on real invariants (volume, manifold, neighbors, template tiling). Skip trivial getters. New GPU behavior that changes connectivity should extend the random-cut or mask suites rather than only adding viewer-side checks.
+Prefer checks on real invariants (volume, manifold, neighbors, template tiling). Skip trivial getters. New GPU behavior that changes connectivity should extend the subdivision suites rather than only adding viewer-side checks.

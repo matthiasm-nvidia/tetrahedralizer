@@ -16,13 +16,15 @@ struct TetrahedralizerParams
     int holeCloseRadius = 0;
     // Keep adjacent surface voxels disconnected unless input geometry crosses
     // their shared face. Interior voxels remain connected.
-    bool splitVoxels = false;
-    // Cut tet edges against the input surface, split them, then discard tets
-    // whose centers lie outside. Input triangles must face outward.
-    bool cutWithInputMesh = false;
-    // Shape-matching iterations that drive each tet toward a regular tet.
-    // 0 skips smoothing.
-    int numSmoothingIterations = 0;
+    bool splitVoxels = true;
+    // Subdivide tet edges longer than this value at their midpoints.
+    // 0 skips subdivision.
+    float maxEdgeLength = 0.0f;
+    // Project boundary nodes onto the input mesh along estimated outward normals.
+    bool projectToInputMesh = true;
+    // Optimization iterations: each does project (if enabled) then one shape-matching smooth.
+    // Surface nodes only slide tangentially when projection normals are present. 0 skips.
+    int numOptimizationIterations = 15;
     // Target regular-tet volume as a fraction of the current tet volume (< 1 contracts).
     float volumeFactor = 0.8f;
 };
@@ -41,10 +43,9 @@ public:
     void create(const std::vector<Vec3>& mesh_vertices, const std::vector<std::uint32_t>& mesh_indices,
                 const TetrahedralizerParams& params = {});
 
-    // Cut unique tet edges at midpoints with the given probability, then split (GPU).
-    void cutRandomEdges(float probability, unsigned seed = 1);
-    // Apply a 6-bit edge-cut mask to a single-tet mesh, then split (GPU).
-    void cutSingleTetByMask(int mask);
+    // Subdivide unique tet edges longer than maxEdgeLength at their midpoints (GPU).
+    // 0 leaves the mesh unchanged.
+    void subdivide(float maxEdgeLength);
 
     bool empty() const
     {

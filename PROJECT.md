@@ -9,7 +9,8 @@ GPU tetrahedralization for unstructured, non-manifold polygonal meshes. The mesh
 3. **Fill the interior**: stamp surface voxels into a dense bit grid, flood exterior air from the grid border, then keep every cell the flood did not reach (surface + enclosed solid).
 4. **Split voxels** (optional): only merge surface-voxel corners across faces crossed by input geometry; interior voxels remain connected.
 5. **Tetrahedralize voxels**: each solid cell becomes five tets via an alternating five-tet cube decomposition so neighboring face diagonals agree.
-6. **Smooth** (optional): shape-matching iterations that pull each tet toward a regular tet scaled by `volumeFactor`.
+6. **Subdivide** (optional): split tet edges longer than `maxEdgeLength` at their midpoints.
+7. **Optimize** (optional): each iteration projects boundary nodes onto the input mesh (if enabled), then runs one shape-matching smooth with tangential-only motion on surface nodes.
 
 ## Parameters
 
@@ -18,9 +19,10 @@ GPU tetrahedralization for unstructured, non-manifold polygonal meshes. The mesh
 | `voxelSpacing` | Grid cell size in world units |
 | `holeCloseRadius` | Morphological close radius in voxels before flood fill (`0` skips) |
 | `splitVoxels` | Disconnect adjacent surface voxels when no input triangle crosses their shared face |
-| `numSmoothingIterations` | Shape-matching passes (`0` skips) |
+| `numOptimizationIterations` | Project (optional) + shape-matching smooth loops (`0` skips) |
 | `volumeFactor` | Target regular-tet volume as a fraction of the current tet volume (`< 1` contracts) |
-| `cutWithInputMesh` | Cut and split tets at the input surface, then carve tets whose centers are outside |
+| `maxEdgeLength` | Subdivide tet edges longer than this value (`0` skips) |
+| `projectToInputMesh` | Project boundary nodes onto the input surface (alone or inside the optimization loop) |
 
 See `TetrahedralizerParams` in `include/tetrahedralizer/Tetrahedralizer.h`.
 
@@ -32,17 +34,15 @@ See `TetrahedralizerParams` in `include/tetrahedralizer/Tetrahedralizer.h`.
 - Optional hole closing and exterior flood-fill interior
 - Optional face-aware voxel splitting before tet creation
 - Five-tet voxel decomposition → node positions and tet indices
-- Optional shape-matching smoothing
-- Cut tets along the input mesh: BVH edge cuts, Steiner vertices, template-based tet split
-- Parallel outside-tet carving from each tet center and its closest oriented input triangle
+- Optional maximum-edge-length subdivision using midpoint vertices and template-based tet subdivision
+- Optional projection of boundary nodes onto the input mesh (outward normals + BVH raycast)
+- Optional optimization loop: project then tangential-constrained shape-matching smooth
 - Face-neighbor table (`tet_neighbors`, 4 slots per tet) via sorted face pairing
-- Interactive viewer: load OBJ, run tetrahedralization, inspect the tet mesh (clip planes, voxel size, split/smooth/cut options)
+- Interactive viewer: load OBJ, run tetrahedralization, inspect the tet mesh (clip planes, voxel size, split/subdivision/project/optimize options)
 
 ### Not implemented yet
 
-- Project outer nodes onto the original surface
 - Collapse short edges
-- Split long edges
 
 ### Voxel split pipeline
 
@@ -74,7 +74,7 @@ For each solid voxel face:
    - Extents = half-cell (+ `kVoxelOverlapMargin`) in the two tangential axes; thickness along the normal is only the margin (a flat “square” approximated as a thin box).
    - Query the input-mesh BVH; leaves tested with `boxTriangleIntersection`.
 
-The same BVH is built once when `splitVoxels` or `cutWithInputMesh` is on.
+The BVH is built when `splitVoxels` or `projectToInputMesh` is on.
 
 #### Pass 2 — corner IDs and merge
 
@@ -106,14 +106,25 @@ Then compact:
 
 Default: `createCornerCoords` → sort/unique by grid position → one node per grid corner globally. Split: connectivity-limited union of per-voxel corners; same grid corner may become multiple nodes.
 
-### Cut pipeline
+### Subdivision pipeline
 
-Host-baked 64×diagBits child templates (from the tet-cut constructive builder). GPU passes stay separate:
+Enabled when `maxEdgeLength > 0`. Host-baked 64×diagBits child templates provide conforming subdivisions for every combination of subdivided tet edges:
 
-1. **Cut vertices**: unique tet edges → BVH hits → append cut nodes; `edgeCutVertices[edge]`.
+1. **Subdivision vertices**: unique tet edges longer than `maxEdgeLength` → append midpoint nodes.
 2. **Steiner vertices**: for each tet, resolve `mask` / `diagBits`; if the template uses local index 10, count → scan → append centroids; `steinerVertexId[tet]`.
-3. **Split tets**: count → scan → write children from the template (`0..3` corners, `4..9` edge cuts, `10` Steiner).
-4. **Carve**: classify child-tet centers by the closest oriented input triangle → scan → compact inside tets.
+3. **Subdivide tets**: count → scan → write children from the template (`0..3` corners, `4..9` edge midpoints, `10` Steiner).
+
+### Projection / optimization pipeline
+
+Enabled by `projectToInputMesh` and/or `numOptimizationIterations > 0`. Runs after neighbors are built.
+
+**Projection** (when `projectToInputMesh`):
+
+1. **Accumulate normals**: for each tet face with no neighbor, add the outward face normal to its three nodes.
+2. **Normalize**: unit-length normals for non-zero accumulations; interior nodes stay zero.
+3. **Raycast**: for each surface node, cast along `-normal` (fall back to `+normal`) against the input-mesh BVH; on hit, move to `hit + 0.1 * voxelSpacing * normal` (stay slightly outside). Hits farther than `2 * voxelSpacing` are ignored and the motion per pass is clamped to `0.1 * voxelSpacing`, so distant geometry cannot pull nodes into spikes. Misses leave the node unchanged.
+
+**Optimization** (`numOptimizationIterations` times): if projection is on, project first (normals reused); then one shape-matching smooth. Surface nodes with a normal keep only the tangential part of the smooth correction (`corr -= n * dot(corr, n)`). With projection off, smooth runs unconstrained. With iterations `0` and projection on, projection runs once.
 
 ## Layout
 
@@ -121,9 +132,9 @@ Host-baked 64×diagBits child templates (from the tet-cut constructive builder).
 | --- | --- |
 | `include/tetrahedralizer/Tetrahedralizer.h` | Public API and parameters |
 | `src/Tetrahedralizer.cpp` | Host entry; dispatches to the GPU path |
-| `src/tetrahedralizers/GpuTetrahedralizer.cu` | Voxelize → fill → optional split → tets → smooth → optional cut |
-| `src/tetrahedralizers/TetCutTemplates.h` | Host-baked tet edge-cut subdivision tables |
-| `src/utils/GpuBVH.*` | GPU BVH for edge–mesh queries |
+| `src/tetrahedralizers/GpuTetrahedralizer.cu` | Voxelize → fill → optional voxel split → tets → optional subdivision → optional optimize/project |
+| `src/tetrahedralizers/TetCutTemplates.h` | Host-baked tet edge-subdivision tables |
+| `src/utils/GpuBVH.*` | GPU BVH used by voxel face queries and projection raycasts |
 | `src/main.cpp` | OpenGL / ImGui viewer |
 | `src/TriMesh.*` | OBJ load |
 

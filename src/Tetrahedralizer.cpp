@@ -33,23 +33,12 @@ void Tetrahedralizer::create(const std::vector<Vec3>& mesh_vertices,
 #endif
 }
 
-void Tetrahedralizer::cutRandomEdges(float probability, unsigned seed)
+void Tetrahedralizer::subdivide(float maxEdgeLength)
 {
 #ifdef TETRAHEDRALIZER_HAS_CUDA
-    GpuTetrahedralizer{}.cutRandomEdges(*this, probability, seed);
+    GpuTetrahedralizer{}.subdivide(*this, maxEdgeLength);
 #else
-    (void)probability;
-    (void)seed;
-    throw std::runtime_error("Tetrahedralizer was built without CUDA support");
-#endif
-}
-
-void Tetrahedralizer::cutSingleTetByMask(int mask)
-{
-#ifdef TETRAHEDRALIZER_HAS_CUDA
-    GpuTetrahedralizer{}.cutSingleTetByMask(*this, mask);
-#else
-    (void)mask;
+    (void)maxEdgeLength;
     throw std::runtime_error("Tetrahedralizer was built without CUDA support");
 #endif
 }
