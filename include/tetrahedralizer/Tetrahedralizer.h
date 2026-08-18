@@ -14,6 +14,9 @@ struct TetrahedralizerParams
     // Morphological close radius in voxels before the exterior flood fill.
     // 0 skips closing; larger values seal bigger shell holes.
     int holeCloseRadius = 0;
+    // Keep adjacent surface voxels disconnected unless input geometry crosses
+    // their shared face. Interior voxels remain connected.
+    bool splitVoxels = false;
     // Cut tet edges against the input surface, split them, then discard tets
     // whose centers lie outside. Input triangles must face outward.
     bool cutWithInputMesh = false;

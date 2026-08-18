@@ -145,6 +145,18 @@ void makeUnitCube(std::vector<Vec3>& vertices, std::vector<std::uint32_t>& indic
     makeCube(vertices, indices, 1.0f);
 }
 
+void makeNearbySheets(std::vector<Vec3>& vertices, std::vector<std::uint32_t>& indices)
+{
+    // The two parallel triangles occupy face-adjacent voxels but neither crosses
+    // their shared x=1 face. The third triangle only fixes the grid origin.
+    vertices = {
+        {-1.0f, 3.0f, 0.2f}, {-1.0f, 3.6f, 0.2f}, {-1.0f, 3.0f, 0.8f},
+        {0.75f, 0.2f, 0.2f}, {0.75f, 0.8f, 0.2f}, {0.75f, 0.2f, 0.8f},
+        {1.25f, 0.2f, 0.2f}, {1.25f, 0.8f, 0.2f}, {1.25f, 0.2f, 0.8f},
+    };
+    indices = {0, 1, 2, 3, 4, 5, 6, 7, 8};
+}
+
 void makeReferenceTet(Tetrahedralizer& mesh)
 {
     mesh.clear();
@@ -259,6 +271,64 @@ MU_TEST(test_voxelized_cube_base_mesh)
     mu_check(stats.volume + 0.05f >= 27.0f);
 }
 
+MU_TEST(test_split_voxels_keeps_interior_connected)
+{
+    std::vector<Vec3> vertices;
+    std::vector<std::uint32_t> indices;
+    makeCube(vertices, indices, 3.0f);
+
+    TetrahedralizerParams params;
+    params.voxelSpacing = 1.0f;
+    params.numSmoothingIterations = 0;
+
+    Tetrahedralizer unsplit;
+    unsplit.create(vertices, indices, params);
+
+    params.splitVoxels = true;
+    Tetrahedralizer split;
+    split.create(vertices, indices, params);
+
+    const int voxelCount = split.numTets() / 5;
+    mu_assert_int_eq(unsplit.numTets(), split.numTets());
+    // Interior voxels share nodes; a failed merge leaves 8 corners per voxel.
+    mu_check(static_cast<int>(split.nodes.size()) < voxelCount * 8);
+    mu_check(static_cast<int>(split.nodes.size()) < voxelCount * 4);
+
+    const MeshStats stats = analyse(split);
+    mu_assert_int_eq(0, stats.badTets);
+    mu_assert_int_eq(0, stats.overusedFaces);
+    mu_assert_int_eq(0, stats.neighborMismatches);
+    mu_check(std::fabs(stats.volume - analyse(unsplit).volume) < 1.0e-4f);
+}
+
+MU_TEST(test_split_voxels_disconnects_nearby_sheets)
+{
+    std::vector<Vec3> vertices;
+    std::vector<std::uint32_t> indices;
+    makeNearbySheets(vertices, indices);
+
+    TetrahedralizerParams params;
+    params.voxelSpacing = 1.0f;
+    params.numSmoothingIterations = 0;
+
+    Tetrahedralizer merged;
+    merged.create(vertices, indices, params);
+
+    params.splitVoxels = true;
+    Tetrahedralizer split;
+    split.create(vertices, indices, params);
+
+    mu_check(!split.empty());
+    mu_assert_int_eq(merged.numTets(), split.numTets());
+    mu_check(split.nodes.size() > merged.nodes.size());
+
+    const MeshStats stats = analyse(split);
+    mu_assert_int_eq(0, stats.badTets);
+    mu_assert_int_eq(0, stats.overusedFaces);
+    mu_assert_int_eq(0, stats.neighborMismatches);
+    mu_check(std::fabs(stats.volume - analyse(merged).volume) < 1.0e-4f);
+}
+
 MU_TEST(test_random_cuts_preserve_manifold_volume)
 {
     Tetrahedralizer mesh = makeVoxelizedCube(3);
@@ -328,6 +398,8 @@ MU_TEST_SUITE(test_suite)
 {
     MU_RUN_TEST(test_cut_templates_tile_reference);
     MU_RUN_TEST(test_voxelized_cube_base_mesh);
+    MU_RUN_TEST(test_split_voxels_keeps_interior_connected);
+    MU_RUN_TEST(test_split_voxels_disconnects_nearby_sheets);
     MU_RUN_TEST(test_random_cuts_preserve_manifold_volume);
     MU_RUN_TEST(test_all_masks_on_single_tet);
     MU_RUN_TEST(test_surface_cut_smoke);

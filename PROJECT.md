@@ -7,8 +7,9 @@ GPU tetrahedralization for unstructured, non-manifold polygonal meshes. The mesh
 1. **Voxelize** the input triangles onto a regular grid (`voxelSpacing`).
 2. **Seal holes** (optional): morphological close (dilate then erode by `holeCloseRadius`) so small gaps in the shell do not leak during flood fill.
 3. **Fill the interior**: stamp surface voxels into a dense bit grid, flood exterior air from the grid border, then keep every cell the flood did not reach (surface + enclosed solid).
-4. **Tetrahedralize voxels**: each solid cell becomes five tets via an alternating five-tet cube decomposition so neighboring face diagonals agree.
-5. **Smooth** (optional): shape-matching iterations that pull each tet toward a regular tet scaled by `volumeFactor`.
+4. **Split voxels** (optional): only merge surface-voxel corners across faces crossed by input geometry; interior voxels remain connected.
+5. **Tetrahedralize voxels**: each solid cell becomes five tets via an alternating five-tet cube decomposition so neighboring face diagonals agree.
+6. **Smooth** (optional): shape-matching iterations that pull each tet toward a regular tet scaled by `volumeFactor`.
 
 ## Parameters
 
@@ -16,6 +17,7 @@ GPU tetrahedralization for unstructured, non-manifold polygonal meshes. The mesh
 | --- | --- |
 | `voxelSpacing` | Grid cell size in world units |
 | `holeCloseRadius` | Morphological close radius in voxels before flood fill (`0` skips) |
+| `splitVoxels` | Disconnect adjacent surface voxels when no input triangle crosses their shared face |
 | `numSmoothingIterations` | Shape-matching passes (`0` skips) |
 | `volumeFactor` | Target regular-tet volume as a fraction of the current tet volume (`< 1` contracts) |
 | `cutWithInputMesh` | Cut and split tets at the input surface, then carve tets whose centers are outside |
@@ -28,18 +30,81 @@ See `TetrahedralizerParams` in `include/tetrahedralizer/Tetrahedralizer.h`.
 
 - Surface voxelization and unique solid-cell collection
 - Optional hole closing and exterior flood-fill interior
+- Optional face-aware voxel splitting before tet creation
 - Five-tet voxel decomposition → node positions and tet indices
 - Optional shape-matching smoothing
 - Cut tets along the input mesh: BVH edge cuts, Steiner vertices, template-based tet split
 - Parallel outside-tet carving from each tet center and its closest oriented input triangle
 - Face-neighbor table (`tet_neighbors`, 4 slots per tet) via sorted face pairing
-- Interactive viewer: load OBJ, run tetrahedralization, inspect the tet mesh (clip planes, voxel size, smooth/cut options)
+- Interactive viewer: load OBJ, run tetrahedralization, inspect the tet mesh (clip planes, voxel size, split/smooth/cut options)
 
 ### Not implemented yet
 
 - Project outer nodes onto the original surface
 - Collapse short edges
 - Split long edges
+
+### Voxel split pipeline
+
+Enabled by `splitVoxels`. Runs after solid voxels are collected and before five-tet creation (`createSplitVoxelNodes` in `GpuTetrahedralizer.cu`). Goal: stop adjacent **surface** voxels from sharing nodes when no input geometry actually crosses their shared face (close sheets / touching shells that only meet in the grid).
+
+Without splitting, all solid voxels share nodes by unique grid-corner coordinates, so any face-adjacent pair is topologically glued.
+
+#### Surface vs interior
+
+After flood fill, every non-air cell is solid. `geomCells` still holds the stamped (and optionally morphologically closed) **surface shell**. Classification:
+
+- **Surface voxel**: bit set in `geomCells`
+- **Interior voxel**: solid and not in `geomCells` (enclosed fill with no input triangles)
+
+Interior faces must stay connected even though no triangles cross them.
+
+#### Pass 1 — face connectivity
+
+Solid voxel coords are sorted after collect so neighbor lookup (`findCoord`) is a binary search.
+
+Array `connectedVoxelFaces[numVoxels * 6]`, face order `-X, +X, -Y, +Y, -Z, +Z` (`kVoxelFaceOffsets`).
+
+For each solid voxel face:
+
+1. Look up the 6-neighbor solid voxel by packed coords (`findCoord` on sorted `voxels`). No solid neighbor → disconnected.
+2. If **either** side is interior → connected.
+3. If **both** are surface → connected only if an input triangle intersects a thin AABB on that face:
+   - Center = voxel center shifted by half a cell along the face normal onto the shared plane.
+   - Extents = half-cell (+ `kVoxelOverlapMargin`) in the two tangential axes; thickness along the normal is only the margin (a flat “square” approximated as a thin box).
+   - Query the input-mesh BVH; leaves tested with `boxTriangleIntersection`.
+
+The same BVH is built once when `splitVoxels` or `cutWithInputMesh` is on.
+
+#### Pass 2 — corner IDs and merge
+
+Local voxel corners (`kVoxelCorners`):
+
+```
+0 (0,0,0)  1 (1,0,0)  2 (1,1,0)  3 (0,1,0)
+4 (0,0,1)  5 (1,0,1)  6 (1,1,1)  7 (0,1,1)
+```
+
+Each solid voxel starts with eight private corner IDs: `8 * voxelIndex + corner`.
+
+Adjacent voxels do **not** use the same local corner index on a shared face, and face winding does not line up. Use the fixed pairing table `kVoxelFaceCornerPairs[face][0..3] = {localCorner, neighborLocalCorner}` (same world grid point). Example: +X pairs `1↔0, 2↔3, 5↔4, 6↔7`.
+
+Parallel label propagation (same idea as smooth-vertex merge in mesh-tools-lib `SharpEdgeSplitter`):
+
+1. `mergedCornerIds[i] = i`
+2. For each connected face, for each of the four pairs: `atomicMin` both sides to `Min(id0, id1)`; set `anyChanged` if a label drops.
+3. Repeat host-side until a pass makes no changes (labels reach component minima).
+
+Then compact:
+
+1. Mark used root labels → exclusive scan → dense node indices in `nodeOffsets`
+2. Roots write world positions into `nodes`; every corner stores its dense id in `voxelCornerNodes[8 * voxel + corner]`
+
+`createTets(..., splitVoxels=true)` reads those eight ids instead of looking up unique grid coords. Unconnected faces never share nodes, so the tet mesh stays disconnected there; connected faces share all four corners and the alternating five-tet pattern still matches diagonals.
+
+#### Contrast with the default path
+
+Default: `createCornerCoords` → sort/unique by grid position → one node per grid corner globally. Split: connectivity-limited union of per-voxel corners; same grid corner may become multiple nodes.
 
 ### Cut pipeline
 
@@ -56,7 +121,7 @@ Host-baked 64×diagBits child templates (from the tet-cut constructive builder).
 | --- | --- |
 | `include/tetrahedralizer/Tetrahedralizer.h` | Public API and parameters |
 | `src/Tetrahedralizer.cpp` | Host entry; dispatches to the GPU path |
-| `src/tetrahedralizers/GpuTetrahedralizer.cu` | Voxelize → fill → tets → smooth → optional cut |
+| `src/tetrahedralizers/GpuTetrahedralizer.cu` | Voxelize → fill → optional split → tets → smooth → optional cut |
 | `src/tetrahedralizers/TetCutTemplates.h` | Host-baked tet edge-cut subdivision tables |
 | `src/utils/GpuBVH.*` | GPU BVH for edge–mesh queries |
 | `src/main.cpp` | OpenGL / ImGui viewer |

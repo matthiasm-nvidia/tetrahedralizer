@@ -43,6 +43,18 @@ Voxelize a side-3 cube at spacing 1:
 - `tet_neighbors` mutual consistency
 - Total tet volume ≈ number of solid voxels (unit spacing), and at least the input cube volume
 
+### `test_split_voxels_keeps_interior_connected`
+
+Voxelize a solid cube with `splitVoxels`. Interior voxels must still share nodes (node count well below `8 × voxelCount`); volume and manifold checks match the unsplit mesh.
+
+### `test_split_voxels_disconnects_nearby_sheets`
+
+Voxelize two nearby parallel triangles in face-adjacent cells. With `splitVoxels` enabled:
+
+- Tet count and total volume stay unchanged
+- Additional node IDs keep the sheets topologically disconnected
+- Tet volumes, face usage, and neighbors remain valid
+
 ### `test_random_cuts_preserve_manifold_volume`
 
 Start from the 3×3×3 voxel mesh, then three rounds of `cutRandomEdges` (probabilities 0.35, 0.15, 0.15). After each round:
