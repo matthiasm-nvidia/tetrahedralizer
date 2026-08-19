@@ -24,9 +24,14 @@ struct TetrahedralizerParams
     // before each smooth so surface nodes only slide tangentially. 0 skips.
     int numOptimizationIterations = 15;
     // Target regular-tet volume as a fraction of the current tet volume (< 1 contracts).
+    // 0 skips tet smoothing.
     float volumeFactor = 0.8f;
     // Pull opposite endpoints of each tet edge toward each other. 0 skips edge smoothing.
     float edgeContraction = 0.0f;
+    // Edge smoothing only. On: every edge contracts both ends, then surface nodes keep
+    // only the tangential part of the correction. Off: mixed interior/surface edges move
+    // only the interior node, with no tangent strip.
+    bool useNormals = true;
 };
 
 class Tetrahedralizer

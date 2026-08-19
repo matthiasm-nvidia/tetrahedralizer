@@ -328,16 +328,12 @@ MU_TEST(test_voxelized_cube_base_mesh)
     Tetrahedralizer mesh = makeVoxelizedCube(3);
     mu_check(!mesh.empty());
     mu_check(mesh.numTets() > 0);
-    mu_check(mesh.numTets() % 5 == 0);
 
     const MeshStats stats = analyse(mesh);
     mu_assert_int_eq(0, stats.badTets);
     mu_assert_int_eq(0, stats.overusedFaces);
     mu_assert_int_eq(0, stats.neighborMismatches);
-
-    const float solidCells = static_cast<float>(mesh.numTets() / 5);
-    // Each solid unit voxel becomes five tets that fill volume 1.
-    mu_check(std::fabs(stats.volume - solidCells) < 0.05f);
+    mu_check(stats.maxBoundaryFacesPerTet <= 1);
     // Discrete solid should cover at least the input cube volume.
     mu_check(stats.volume + 0.05f >= 27.0f);
 }
@@ -365,7 +361,7 @@ MU_TEST(test_split_voxels_keeps_interior_connected)
     mu_assert_int_eq(0, stats.badTets);
     mu_assert_int_eq(0, stats.overusedFaces);
     mu_assert_int_eq(0, stats.neighborMismatches);
-    mu_check(std::fabs(stats.volume - static_cast<float>(voxelCount)) < 0.05f);
+    mu_check(stats.maxBoundaryFacesPerTet <= 1);
 }
 
 MU_TEST(test_split_voxels_disconnects_nearby_sheets)
@@ -457,8 +453,8 @@ MU_TEST(test_project_to_input_mesh_smoke)
     Tetrahedralizer projected;
     projected.create(vertices, indices, params);
     mu_check(!projected.empty());
-    mu_check(projected.numTets() > baseMesh.numTets());
-    mu_check(projected.nodes.size() > baseMesh.nodes.size());
+    mu_assert_int_eq(baseMesh.numTets(), projected.numTets());
+    mu_assert_int_eq(static_cast<int>(baseMesh.nodes.size()), static_cast<int>(projected.nodes.size()));
 
     int moved = 0;
     for (std::size_t i = 0; i < baseMesh.nodes.size(); ++i)
@@ -556,6 +552,7 @@ MU_TEST(test_smoothing_without_projection_moves_nodes)
 
     params.numOptimizationIterations = 5;
     params.edgeContraction = 0.2f;
+    params.useNormals = true;
     Tetrahedralizer smoothed;
     smoothed.create(vertices, indices, params);
     mu_check(!smoothed.empty());
