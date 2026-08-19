@@ -78,7 +78,7 @@ Conformity uses `oddBoundaryEdges`: every boundary edge must be used by an even 
 
 ### `test_optimization_loop_smoke`
 
-Voxelize a cube with `projectToInputMesh` and `numOptimizationIterations = 5`. Checks the mesh stays manifold with boundary faces, with at most one boundary face per tet, after project→smooth loops.
+Voxelize a cube with `projectToInputMesh` and `numOptimizationIterations = 5`. Checks the mesh stays manifold with boundary faces, with at most one boundary face per tet, after smooth→project loops.
 
 ## Adding tests
 

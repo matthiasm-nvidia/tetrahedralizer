@@ -472,6 +472,44 @@ MU_TEST(test_project_to_input_mesh_smoke)
     mu_check(stats.maxBoundaryFacesPerTet <= 1);
 }
 
+MU_TEST(test_project_to_closest_point_smoke)
+{
+    std::vector<Vec3> vertices;
+    std::vector<std::uint32_t> indices;
+    makeCube(vertices, indices, 3.0f);
+
+    TetrahedralizerParams params;
+    params.voxelSpacing = 1.0f;
+    params.numOptimizationIterations = 0;
+    params.projectToInputMesh = false;
+
+    Tetrahedralizer baseMesh;
+    baseMesh.create(vertices, indices, params);
+
+    params.projectToInputMesh = true;
+    params.projectToClosestPoint = true;
+    Tetrahedralizer projected;
+    projected.create(vertices, indices, params);
+    mu_check(!projected.empty());
+    mu_assert_int_eq(baseMesh.numTets(), projected.numTets());
+    mu_assert_int_eq(static_cast<int>(baseMesh.nodes.size()), static_cast<int>(projected.nodes.size()));
+
+    int moved = 0;
+    for (std::size_t i = 0; i < baseMesh.nodes.size(); ++i)
+    {
+        if ((projected.nodes[i] - baseMesh.nodes[i]).magnitudeSquared() > 1.0e-12f)
+            ++moved;
+    }
+    mu_check(moved > 0);
+
+    const MeshStats stats = analyse(projected);
+    mu_assert_int_eq(0, stats.badTets);
+    mu_assert_int_eq(0, stats.overusedFaces);
+    mu_assert_int_eq(0, stats.neighborMismatches);
+    mu_assert_int_eq(0, stats.oddBoundaryEdges);
+    mu_check(stats.maxBoundaryFacesPerTet <= 1);
+}
+
 MU_TEST(test_boundary_refinement_stays_conforming)
 {
     std::vector<Vec3> vertices;
@@ -519,7 +557,7 @@ MU_TEST(test_optimization_loop_smoke)
     params.voxelSpacing = 1.0f;
     params.projectToInputMesh = true;
     params.numOptimizationIterations = 5;
-    params.volumeFactor = 0.8f;
+    params.volumeContraction = 0.2f;
     params.edgeContraction = 0.5f;
 
     Tetrahedralizer mesh;
@@ -535,6 +573,37 @@ MU_TEST(test_optimization_loop_smoke)
     mu_check(stats.maxBoundaryFacesPerTet <= 1);
 }
 
+MU_TEST(test_node_normals_mark_boundary)
+{
+    Tetrahedralizer mesh = makeVoxelizedCube(3);
+    const std::vector<Vec3> normals = mesh.nodeNormals();
+    mu_assert_int_eq(static_cast<int>(mesh.nodes.size()), static_cast<int>(normals.size()));
+
+    Vec3 center(0.0f, 0.0f, 0.0f);
+    for (const Vec3& node : mesh.nodes)
+        center += node;
+    center = center / static_cast<float>(mesh.nodes.size());
+
+    int surface = 0;
+    int interior = 0;
+    int inward = 0;
+    for (std::size_t i = 0; i < mesh.nodes.size(); ++i)
+    {
+        if (normals[i].magnitudeSquared() == 0.0f)
+        {
+            ++interior;
+            continue;
+        }
+        ++surface;
+        mu_check(std::fabs(normals[i].magnitude() - 1.0f) < 1.0e-4f);
+        if (normals[i].dot(mesh.nodes[i] - center) < 0.0f)
+            ++inward;
+    }
+    mu_check(surface > 0);
+    mu_check(interior > 0);
+    mu_assert_int_eq(0, inward);
+}
+
 MU_TEST(test_smoothing_without_projection_moves_nodes)
 {
     std::vector<Vec3> vertices;
@@ -545,7 +614,7 @@ MU_TEST(test_smoothing_without_projection_moves_nodes)
     params.voxelSpacing = 1.0f;
     params.projectToInputMesh = false;
     params.numOptimizationIterations = 0;
-    params.volumeFactor = 0.8f;
+    params.volumeContraction = 0.2f;
 
     Tetrahedralizer baseMesh;
     baseMesh.create(vertices, indices, params);
@@ -582,8 +651,10 @@ MU_TEST_SUITE(test_suite)
     MU_RUN_TEST(test_subdivision_preserves_manifold_volume);
     MU_RUN_TEST(test_max_edge_length_parameter);
     MU_RUN_TEST(test_project_to_input_mesh_smoke);
+    MU_RUN_TEST(test_project_to_closest_point_smoke);
     MU_RUN_TEST(test_boundary_refinement_stays_conforming);
     MU_RUN_TEST(test_optimization_loop_smoke);
+    MU_RUN_TEST(test_node_normals_mark_boundary);
     MU_RUN_TEST(test_smoothing_without_projection_moves_nodes);
 }
 

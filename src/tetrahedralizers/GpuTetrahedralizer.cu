@@ -589,9 +589,9 @@ __device__ void regularTetCorners(Vec3 q[4])
     q[3] = Vec3(-1.0f, 1.0f, -1.0f);
 }
 
-// Fit a rotated regular tet with volumeFactor * the current tet volume and accumulate
-// the corner deltas.
-__global__ void smoothAccumulate(TetDeviceData data, float volumeFactor)
+// Fit a rotated regular tet with remainingVolumeFraction * the current tet volume
+// and accumulate the corner deltas.
+__global__ void smoothAccumulate(TetDeviceData data, float remainingVolumeFraction)
 {
     CUDA_THREAD_GUARD(tetIndex, data.numTets)
 
@@ -613,7 +613,7 @@ __global__ void smoothAccumulate(TetDeviceData data, float volumeFactor)
     Vec3 q[4];
     regularTetCorners(q);
     const Mat33 Q(q[1] - q[0], q[2] - q[0], q[3] - q[0]);
-    const float targetScale = cbrtf(volumeFactor * sixVolume / kRegularSixVolume);
+    const float targetScale = cbrtf(remainingVolumeFraction * sixVolume / kRegularSixVolume);
 
     Mat33 R, U, D;
     headerPolarDecomposition(P * Q.getInverse(), R, U, D);
@@ -784,9 +784,11 @@ void applyNodeMovesSafely(TetDeviceData& data)
     CUDA_LAUNCH(applyNodeMoves, data.numNodes, data);
 }
 
-void smoothTets(TetDeviceData& data, int iterations, float volumeFactor, const Vec3* normals = nullptr)
+void smoothTets(TetDeviceData& data, int iterations, float volumeContraction, const Vec3* normals = nullptr)
 {
-    if (iterations <= 0 || !(volumeFactor > 0.0f) || data.numTets <= 0 || data.numNodes <= 0)
+    const float remainingVolumeFraction = 1.0f - volumeContraction;
+    if (iterations <= 0 || !(volumeContraction > 0.0f) || !(remainingVolumeFraction > 0.0f) || data.numTets <= 0 ||
+        data.numNodes <= 0)
         return;
 
     data.smoothOffsets.resize(static_cast<std::size_t>(data.numNodes));
@@ -797,7 +799,7 @@ void smoothTets(TetDeviceData& data, int iterations, float volumeFactor, const V
         data.smoothOffsets.setZero();
         data.smoothCounts.setZero();
         data.moveOffsets.setZero();
-        CUDA_LAUNCH(smoothAccumulate, data.numTets, data, volumeFactor);
+        CUDA_LAUNCH(smoothAccumulate, data.numTets, data, remainingVolumeFraction);
         CUDA_LAUNCH(smoothApply, data.numNodes, data, normals);
         applyNodeMovesSafely(data);
     }
@@ -1046,6 +1048,27 @@ __global__ void projectSurfaceNodes(TetDeviceData data, const Vec3* normals, flo
         return;
 
     data.moveOffsets[nodeIndex] = normal * fminf(fmaxf(distance, -maxStep), maxStep);
+}
+
+__global__ void projectSurfaceNodesToClosestPoint(TetDeviceData data, const Vec3* normals)
+{
+    CUDA_THREAD_GUARD(nodeIndex, data.numNodes)
+
+    if (normals[nodeIndex].magnitudeSquared() == 0.0f)
+        return;
+
+    Vec3 query = data.nodes[nodeIndex];
+    Vec3 bary;
+    Vec3 closestPos;
+    int closestTri = -1;
+    bool inside = false;
+    if (!header_queryClosestPoint(data.triangleBvh, query, 0.0f, data.meshVertices.buffer,
+                                  reinterpret_cast<int*>(data.meshIndices.buffer), closestTri, bary, closestPos,
+                                  inside) ||
+        closestTri < 0)
+        return;
+
+    data.moveOffsets[nodeIndex] = closestPos - query;
 }
 
 __global__ void markLongEdges(TetDeviceData data, float maxEdgeLength)
@@ -1518,6 +1541,25 @@ void projectSurfaceNodesToInputMesh(TetDeviceData& data, const Vec3* normals, fl
     applyNodeMovesSafely(data);
 }
 
+void projectToClosestPointOnInputMesh(TetDeviceData& data, const Vec3* normals)
+{
+    if (data.numNodes <= 0 || data.numTets <= 0 || !normals)
+        return;
+
+    data.moveOffsets.resize(static_cast<std::size_t>(data.numNodes), false);
+    data.moveOffsets.setZero();
+    CUDA_LAUNCH(projectSurfaceNodesToClosestPoint, data.numNodes, data, normals);
+    applyNodeMovesSafely(data);
+}
+
+void projectBoundaryNodes(TetDeviceData& data, const Vec3* normals, const TetrahedralizerParams& params)
+{
+    if (params.projectToClosestPoint)
+        projectToClosestPointOnInputMesh(data, normals);
+    else
+        projectSurfaceNodesToInputMesh(data, normals, params.voxelSpacing);
+}
+
 void runOptimization(TetDeviceData& data, const TetrahedralizerParams& params)
 {
     const bool project = params.projectToInputMesh;
@@ -1528,7 +1570,7 @@ void runOptimization(TetDeviceData& data, const TetrahedralizerParams& params)
         {
             DeviceBuffer<Vec3> normals;
             computeSurfaceNormals(data, normals);
-            projectSurfaceNodesToInputMesh(data, normals.buffer, params.voxelSpacing);
+            projectBoundaryNodes(data, normals.buffer, params);
             normals.free();
         }
         return;
@@ -1537,25 +1579,24 @@ void runOptimization(TetDeviceData& data, const TetrahedralizerParams& params)
     DeviceBuffer<Vec3> normals;
     for (int iteration = 0; iteration < params.numOptimizationIterations; ++iteration)
     {
-        if (project)
-        {
-            computeSurfaceNormals(data, normals);
-            projectSurfaceNodesToInputMesh(data, normals.buffer, params.voxelSpacing);
-        }
-
         const Vec3* smoothNormals = nullptr;
-        if (project && params.volumeFactor > 0.0f)
+        if (project && params.volumeContraction > 0.0f && params.volumeContraction < 1.0f)
         {
             computeSurfaceNormals(data, normals);
             smoothNormals = normals.buffer;
         }
-        smoothTets(data, 1, params.volumeFactor, smoothNormals);
+        smoothTets(data, 1, params.volumeContraction, smoothNormals);
         if (params.edgeContraction > 0.0f)
         {
             computeSurfaceNormals(data, normals);
             const Vec3* classifyNormals = params.useNormals ? nullptr : normals.buffer;
             const Vec3* applyNormals = params.useNormals ? normals.buffer : nullptr;
             smoothEdges(data, 1, params.edgeContraction, classifyNormals, applyNormals);
+        }
+        if (project)
+        {
+            computeSurfaceNormals(data, normals);
+            projectBoundaryNodes(data, normals.buffer, params);
         }
     }
     normals.free();
@@ -1591,8 +1632,8 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
         throw std::invalid_argument("Hole close radius must be non-negative");
     if (params.numOptimizationIterations < 0)
         throw std::invalid_argument("Optimization iteration count must be non-negative");
-    if (!(params.volumeFactor >= 0.0f) || !std::isfinite(params.volumeFactor))
-        throw std::invalid_argument("Volume factor must be finite and non-negative");
+    if (!(params.volumeContraction >= 0.0f) || !std::isfinite(params.volumeContraction))
+        throw std::invalid_argument("Volume contraction must be finite and non-negative");
     if (!(params.edgeContraction >= 0.0f) || !std::isfinite(params.edgeContraction))
         throw std::invalid_argument("Edge contraction must be finite and non-negative");
     if (!(params.maxEdgeLength >= 0.0f) || !std::isfinite(params.maxEdgeLength))

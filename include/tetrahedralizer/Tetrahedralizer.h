@@ -19,19 +19,23 @@ struct TetrahedralizerParams
     float maxEdgeLength = 0.0f;
     // Project boundary nodes onto the input mesh along estimated outward normals.
     bool projectToInputMesh = true;
-    // Optimization iterations: each does project (if enabled), tet smoothing, then edge
-    // smoothing. When projecting, surface normals are recomputed before projection and
-    // before each smooth so surface nodes only slide tangentially. 0 skips.
+    // When projecting, snap each boundary node to the closest input-mesh point
+    // instead of raycasting along its estimated normal. No offset; moves inward or outward.
+    bool projectToClosestPoint = false;
+    // Optimization iterations: each does tet smoothing, then edge smoothing, then
+    // project (if enabled). When projecting, surface normals are recomputed before
+    // each smooth so surface nodes only slide tangentially, and again before project.
+    // 0 skips smoothing; projection still runs once if enabled.
     int numOptimizationIterations = 15;
-    // Target regular-tet volume as a fraction of the current tet volume (< 1 contracts).
-    // 0 skips tet smoothing.
-    float volumeFactor = 0.8f;
+    // Fraction of current tet volume to remove while shape-matching to a regular tet.
+    // 0 skips tet smoothing; 0.2 targets 80% of the current volume.
+    float volumeContraction = 0.2f;
     // Pull opposite endpoints of each tet edge toward each other. 0 skips edge smoothing.
-    float edgeContraction = 0.0f;
+    float edgeContraction = 0.2f;
     // Edge smoothing only. On: every edge contracts both ends, then surface nodes keep
     // only the tangential part of the correction. Off: mixed interior/surface edges move
     // only the interior node, with no tangent strip.
-    bool useNormals = true;
+    bool useNormals = false;
 };
 
 class Tetrahedralizer
@@ -61,6 +65,9 @@ public:
     {
         return static_cast<int>(tet_indices.size() / 4);
     }
+
+    // One outward unit normal per node from boundary faces; interior nodes are zero.
+    std::vector<Vec3> nodeNormals() const;
 };
 
 } // namespace tetrahedralizer

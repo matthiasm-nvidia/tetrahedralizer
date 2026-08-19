@@ -11,7 +11,7 @@ GPU tetrahedralization for unstructured, non-manifold polygonal meshes. The mesh
 5. **Tetrahedralize voxels**: each solid cell becomes five tets via an alternating five-tet cube decomposition so neighboring face diagonals agree.
 6. **Subdivide** (optional): split tet edges longer than `maxEdgeLength` at their midpoints.
 7. **Prepare boundary tets** (when projecting): separate multiple boundary faces into different tets.
-8. **Optimize** (optional): each iteration projects boundary nodes onto the input mesh (if enabled), then runs one shape-matching smooth with tangential-only motion on surface nodes.
+8. **Optimize** (optional): each iteration runs one shape-matching smooth with tangential-only motion on surface nodes, then projects boundary nodes onto the input mesh (if enabled).
 
 ## Parameters
 
@@ -21,7 +21,8 @@ GPU tetrahedralization for unstructured, non-manifold polygonal meshes. The mesh
 | `holeCloseRadius` | Morphological close radius in voxels before flood fill (`0` skips) |
 | `splitVoxels` | Disconnect adjacent surface voxels when no input triangle crosses their shared face |
 | `numOptimizationIterations` | Project (optional) + shape-matching smooth loops (`0` skips) |
-| `volumeFactor` | Target regular-tet volume as a fraction of the current tet volume (`< 1` contracts) |
+| `volumeContraction` | Fraction of current tet volume to remove while shape-matching (`0` skips) |
+| `edgeContraction` | Fraction of each tet-edge length to pull endpoints together (`0` skips) |
 | `maxEdgeLength` | Subdivide tet edges longer than this value (`0` skips) |
 | `projectToInputMesh` | Project boundary nodes onto the input surface (alone or inside the optimization loop) |
 
@@ -37,7 +38,7 @@ See `TetrahedralizerParams` in `include/tetrahedralizer/Tetrahedralizer.h`.
 - Five-tet voxel decomposition → node positions and tet indices
 - Optional maximum-edge-length subdivision using midpoint vertices and template-based tet subdivision
 - Optional projection of boundary nodes onto the input mesh (outward normals + BVH raycast)
-- Optional optimization loop: project then tangential-constrained shape-matching smooth
+- Optional optimization loop: shape-matching smooth then project
 - Face-neighbor table (`tet_neighbors`, 4 slots per tet) via sorted face pairing
 - Interactive viewer: load OBJ, run tetrahedralization, inspect the tet mesh (clip planes, voxel size, split/subdivision/project/optimize options)
 
@@ -129,7 +130,7 @@ Before projection, boundary topology is refined until no tet edge has both oppos
 
 Projection and smoothing never write node positions directly. Both fill a per-node offset buffer, and `applyNodeMovesSafely` then halves the step of every node belonging to a tet that the move would shrink below `kMinMoveVolumeFraction` of its current volume, repeating until no tet is affected (a step below `kMinMoveScale` becomes zero, which restores the original corners, so the loop always terminates). Without this backoff interior midpoints added by boundary refinement can cross a boundary face and produce spikes.
 
-**Optimization** (`numOptimizationIterations` times): if projection is on, project first (normals reused); then one shape-matching smooth. Surface nodes with a normal keep only the tangential part of the smooth correction (`corr -= n * dot(corr, n)`). With projection off, smooth runs unconstrained. With iterations `0` and projection on, projection runs once.
+**Optimization** (`numOptimizationIterations` times): one shape-matching smooth, then edge contraction if enabled, then project if enabled. Surface nodes with a normal keep only the tangential part of the smooth correction (`corr -= n * dot(corr, n)`). With projection off, smooth runs unconstrained. With iterations `0` and projection on, projection runs once.
 
 ## Layout
 

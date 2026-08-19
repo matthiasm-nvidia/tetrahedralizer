@@ -38,11 +38,12 @@ struct AppState
     float voxel_spacing = 0.1f;
     int hole_close_radius = 0;
     int optimization_iterations = 15;
-    float volume_factor = 0.8f;
-    float edge_contraction = 0.0f;
-    bool edge_use_normals = true;
+    float volume_contraction = 0.2f;
+    float edge_contraction = 0.2f;
+    bool edge_use_normals = false;
     float max_edge_length = 0.0f;
     bool project_to_input_mesh = true;
+    bool project_to_closest_point = false;
     // Percentage of the mesh bounds cut away along each axis, 0 disables the clip plane.
     int clip[3] = {0, 0, 0};
     int mouse_x = 0;
@@ -100,9 +101,9 @@ bool imguiWantsMouse()
 }
 
 void createTets(const tetrahedralizer::TriMesh& mesh, float voxel_spacing, int hole_close_radius,
-                int optimization_iterations, float volume_factor, float edge_contraction, bool edge_use_normals,
-                float max_edge_length, bool project_to_input_mesh, tetrahedralizer::Tetrahedralizer& tets,
-                tetrahedralizer::TetMeshRenderer& tet_renderer)
+                int optimization_iterations, float volume_contraction, float edge_contraction, bool edge_use_normals,
+                float max_edge_length, bool project_to_input_mesh, bool project_to_closest_point,
+                tetrahedralizer::Tetrahedralizer& tets, tetrahedralizer::TetMeshRenderer& tet_renderer)
 {
     try
     {
@@ -110,11 +111,12 @@ void createTets(const tetrahedralizer::TriMesh& mesh, float voxel_spacing, int h
         params.voxelSpacing = voxel_spacing;
         params.holeCloseRadius = hole_close_radius;
         params.numOptimizationIterations = optimization_iterations;
-        params.volumeFactor = volume_factor;
+        params.volumeContraction = volume_contraction;
         params.edgeContraction = edge_contraction;
         params.useNormals = edge_use_normals;
         params.maxEdgeLength = max_edge_length;
         params.projectToInputMesh = project_to_input_mesh;
+        params.projectToClosestPoint = project_to_closest_point;
         tets.create(mesh.positions, mesh.triangle_indices, params);
         tet_renderer.upload(tets.nodes, tets.tet_indices);
     }
@@ -316,6 +318,7 @@ int main()
     bool show_tets = true;
     bool wireframe = false;
     bool tet_wireframe = false;
+    bool show_normals = false;
     float tet_scale = 0.85f;
 
     while (!glfwWindowShouldClose(window))
@@ -349,6 +352,28 @@ int main()
             tet_renderer.render(tet_wireframe, tet_scale);
         }
 
+        if (show_normals && !tets.empty())
+        {
+            applyClipPlanes(clip);
+            const std::vector<tetrahedralizer::Vec3> normals = tets.nodeNormals();
+            const float length = 0.5f * state.voxel_spacing;
+            glColor3f(1.0f, 0.0f, 0.0f);
+            glLineWidth(3.0f);
+            glBegin(GL_LINES);
+            for (std::size_t i = 0; i < tets.nodes.size() && i < normals.size(); ++i)
+            {
+                if (normals[i].magnitudeSquared() == 0.0f)
+                    continue;
+                const tetrahedralizer::Vec3& origin = tets.nodes[i];
+                const tetrahedralizer::Vec3 tip = origin + normals[i] * length;
+                glVertex3f(origin.x, origin.y, origin.z);
+                glVertex3f(tip.x, tip.y, tip.z);
+            }
+            glEnd();
+            glLineWidth(1.0f);
+            disableClipPlanes();
+        }
+
         ImGui_ImplGLFW_NewFrame();
         ImGui::SetNextWindowSize(ImVec2(kGuiWindowWidth, kGuiWindowHeight), ImGuiSetCond_FirstUseEver);
         ImGui::Begin("Controls");
@@ -372,16 +397,20 @@ int main()
             viewer::imgui_widgets::slider_float("Voxel size", &state.voxel_spacing, 0.01f, 0.1f);
             viewer::imgui_widgets::slider_int("Hole close", &state.hole_close_radius, 0, 5);
             viewer::imgui_widgets::slider_int("Opt iters", &state.optimization_iterations, 0, 50);
-            viewer::imgui_widgets::slider_float("Volume factor", &state.volume_factor, 0.0f, 1.0f);
+            viewer::imgui_widgets::slider_float("Volume contraction", &state.volume_contraction, 0.0f, 1.0f);
             viewer::imgui_widgets::slider_float("Edge contraction", &state.edge_contraction, 0.0f, 1.0f);
             viewer::imgui_widgets::checkbox("Edge use normals", &state.edge_use_normals);
             viewer::imgui_widgets::slider_float("Max edge length", &state.max_edge_length, 0.0f, 0.2f);
             viewer::imgui_widgets::checkbox("Project to mesh", &state.project_to_input_mesh);
+            if (state.project_to_input_mesh)
+                viewer::imgui_widgets::checkbox("Project to closest point", &state.project_to_closest_point);
             if (viewer::imgui_widgets::button_full_width("Create tets"))
                 createTets(mesh, state.voxel_spacing, state.hole_close_radius, state.optimization_iterations,
-                           state.volume_factor, state.edge_contraction, state.edge_use_normals, state.max_edge_length,
-                           state.project_to_input_mesh, tets, tet_renderer);
+                           state.volume_contraction, state.edge_contraction, state.edge_use_normals,
+                           state.max_edge_length, state.project_to_input_mesh, state.project_to_closest_point, tets,
+                           tet_renderer);
             viewer::imgui_widgets::checkbox("Show tets", &show_tets);
+            viewer::imgui_widgets::checkbox("Show normals", &show_normals);
             viewer::imgui_widgets::checkbox("Tet wireframe", &tet_wireframe);
             if (!tet_wireframe)
                 viewer::imgui_widgets::slider_float("Tet scale", &tet_scale, 0.5f, 1.0f);
