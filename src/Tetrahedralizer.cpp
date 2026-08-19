@@ -1,4 +1,5 @@
 #include "tetrahedralizer/Tetrahedralizer.h"
+#include "tetrahedralizers/TetCutTemplates.h"
 
 #ifdef TETRAHEDRALIZER_HAS_CUDA
 #include "tetrahedralizers/GpuTetrahedralizer.h"
@@ -8,15 +9,6 @@
 
 namespace tetrahedralizer
 {
-
-namespace
-{
-
-constexpr int kTetFaces[4][3] = {
-    {0, 1, 2}, {0, 1, 3}, {0, 2, 3}, {1, 2, 3},
-};
-
-} // namespace
 
 void Tetrahedralizer::clear()
 {
@@ -67,10 +59,10 @@ std::vector<Vec3> Tetrahedralizer::nodeNormals() const
             if (tet_neighbors[static_cast<std::size_t>(4 * tetIndex + face)] >= 0)
                 continue;
 
-            const int i0 = ids[kTetFaces[face][0]];
-            const int i1 = ids[kTetFaces[face][1]];
-            const int i2 = ids[kTetFaces[face][2]];
-            const int iOpp = ids[6 - kTetFaces[face][0] - kTetFaces[face][1] - kTetFaces[face][2]];
+            const int i0 = ids[tet_cut::kTetFaces[face][0]];
+            const int i1 = ids[tet_cut::kTetFaces[face][1]];
+            const int i2 = ids[tet_cut::kTetFaces[face][2]];
+            const int iOpp = ids[6 - tet_cut::kTetFaces[face][0] - tet_cut::kTetFaces[face][1] - tet_cut::kTetFaces[face][2]];
             if (i0 < 0 || i1 < 0 || i2 < 0 || iOpp < 0 ||
                 i0 >= static_cast<int>(nodes.size()) || i1 >= static_cast<int>(nodes.size()) ||
                 i2 >= static_cast<int>(nodes.size()) || iOpp >= static_cast<int>(nodes.size()))

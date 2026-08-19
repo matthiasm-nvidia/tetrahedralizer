@@ -11,13 +11,13 @@
 #include "imgui_impl_glfw.h"
 
 #include "FileDialog.h"
-#include "tetrahedralizer/Camera.h"
-#include "tetrahedralizer/GlCore.h"
-#include "tetrahedralizer/LastPath.h"
-#include "tetrahedralizer/TetMeshRenderer.h"
+#include "Camera.h"
+#include "GlCore.h"
+#include "LastPath.h"
+#include "TetMeshRenderer.h"
 #include "tetrahedralizer/Tetrahedralizer.h"
 #include "tetrahedralizer/TriMesh.h"
-#include "tetrahedralizer/TriMeshRenderer.h"
+#include "TriMeshRenderer.h"
 #include "viewer_imgui_theme.h"
 #include "viewer_imgui_widgets.h"
 
@@ -35,15 +35,7 @@ struct AppState
     tetrahedralizer::Vec3 orbit_center{0.0f, 0.0f, 0.0f};
     tetrahedralizer::Bounds3 mesh_bounds;
     float scene_scale = 1.0f;
-    float voxel_spacing = 0.1f;
-    int hole_close_radius = 0;
-    int optimization_iterations = 15;
-    float volume_contraction = 0.2f;
-    float edge_contraction = 0.2f;
-    bool edge_use_normals = false;
-    float max_edge_length = 0.0f;
-    bool project_to_input_mesh = true;
-    bool project_to_closest_point = false;
+    tetrahedralizer::TetrahedralizerParams tet_params;
     // Percentage of the mesh bounds cut away along each axis, 0 disables the clip plane.
     int clip[3] = {0, 0, 0};
     int mouse_x = 0;
@@ -100,23 +92,11 @@ bool imguiWantsMouse()
     return ImGui::GetCurrentContext() != nullptr && ImGui::GetIO().WantCaptureMouse;
 }
 
-void createTets(const tetrahedralizer::TriMesh& mesh, float voxel_spacing, int hole_close_radius,
-                int optimization_iterations, float volume_contraction, float edge_contraction, bool edge_use_normals,
-                float max_edge_length, bool project_to_input_mesh, bool project_to_closest_point,
+void createTets(const tetrahedralizer::TriMesh& mesh, const tetrahedralizer::TetrahedralizerParams& params,
                 tetrahedralizer::Tetrahedralizer& tets, tetrahedralizer::TetMeshRenderer& tet_renderer)
 {
     try
     {
-        tetrahedralizer::TetrahedralizerParams params;
-        params.voxelSpacing = voxel_spacing;
-        params.holeCloseRadius = hole_close_radius;
-        params.numOptimizationIterations = optimization_iterations;
-        params.volumeContraction = volume_contraction;
-        params.edgeContraction = edge_contraction;
-        params.useNormals = edge_use_normals;
-        params.maxEdgeLength = max_edge_length;
-        params.projectToInputMesh = project_to_input_mesh;
-        params.projectToClosestPoint = project_to_closest_point;
         tets.create(mesh.positions, mesh.triangle_indices, params);
         tet_renderer.upload(tets.nodes, tets.tet_indices);
     }
@@ -306,6 +286,7 @@ int main()
     ImGui_ImplGLFW_Init(window, false);
 
     AppState state;
+    state.tet_params.voxelSpacing = 0.1f;
     state.camera.init();
     state.camera.speed = kBaseCameraSpeed;
     installCallbacks(window, &state);
@@ -356,7 +337,7 @@ int main()
         {
             applyClipPlanes(clip);
             const std::vector<tetrahedralizer::Vec3> normals = tets.nodeNormals();
-            const float length = 0.5f * state.voxel_spacing;
+            const float length = 0.5f * state.tet_params.voxelSpacing;
             glColor3f(1.0f, 0.0f, 0.0f);
             glLineWidth(3.0f);
             glBegin(GL_LINES);
@@ -394,21 +375,18 @@ int main()
 
             viewer::imgui_widgets::section_separator();
             viewer::imgui_widgets::section_heading("Tets");
-            viewer::imgui_widgets::slider_float("Voxel size", &state.voxel_spacing, 0.01f, 0.1f);
-            viewer::imgui_widgets::slider_int("Hole close", &state.hole_close_radius, 0, 5);
-            viewer::imgui_widgets::slider_int("Opt iters", &state.optimization_iterations, 0, 50);
-            viewer::imgui_widgets::slider_float("Volume contraction", &state.volume_contraction, 0.0f, 1.0f);
-            viewer::imgui_widgets::slider_float("Edge contraction", &state.edge_contraction, 0.0f, 1.0f);
-            viewer::imgui_widgets::checkbox("Edge use normals", &state.edge_use_normals);
-            viewer::imgui_widgets::slider_float("Max edge length", &state.max_edge_length, 0.0f, 0.2f);
-            viewer::imgui_widgets::checkbox("Project to mesh", &state.project_to_input_mesh);
-            if (state.project_to_input_mesh)
-                viewer::imgui_widgets::checkbox("Project to closest point", &state.project_to_closest_point);
+            viewer::imgui_widgets::slider_float("Voxel size", &state.tet_params.voxelSpacing, 0.01f, 0.1f);
+            viewer::imgui_widgets::slider_int("Hole close", &state.tet_params.holeCloseRadius, 0, 5);
+            viewer::imgui_widgets::slider_int("Opt iters", &state.tet_params.numOptimizationIterations, 0, 50);
+            viewer::imgui_widgets::slider_float("Volume contraction", &state.tet_params.volumeContraction, 0.0f, 1.0f);
+            viewer::imgui_widgets::slider_float("Edge contraction", &state.tet_params.edgeContraction, 0.0f, 1.0f);
+            viewer::imgui_widgets::checkbox("Edge use normals", &state.tet_params.useNormals);
+            viewer::imgui_widgets::slider_float("Max edge length", &state.tet_params.maxEdgeLength, 0.0f, 0.2f);
+            viewer::imgui_widgets::checkbox("Project to mesh", &state.tet_params.projectToInputMesh);
+            if (state.tet_params.projectToInputMesh)
+                viewer::imgui_widgets::checkbox("Project to closest point", &state.tet_params.projectToClosestPoint);
             if (viewer::imgui_widgets::button_full_width("Create tets"))
-                createTets(mesh, state.voxel_spacing, state.hole_close_radius, state.optimization_iterations,
-                           state.volume_contraction, state.edge_contraction, state.edge_use_normals,
-                           state.max_edge_length, state.project_to_input_mesh, state.project_to_closest_point, tets,
-                           tet_renderer);
+                createTets(mesh, state.tet_params, tets, tet_renderer);
             viewer::imgui_widgets::checkbox("Show tets", &show_tets);
             viewer::imgui_widgets::checkbox("Show normals", &show_normals);
             viewer::imgui_widgets::checkbox("Tet wireframe", &tet_wireframe);

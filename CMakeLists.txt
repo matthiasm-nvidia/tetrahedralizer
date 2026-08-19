@@ -34,6 +34,10 @@ if(TETRAHEDRALIZER_ENABLE_CUDA)
             src/utils/CudaUtils.cpp
             src/utils/GpuBVH.cu
             src/tetrahedralizers/GpuTetrahedralizer.cu
+            src/tetrahedralizers/Voxelize.cu
+            src/tetrahedralizers/VoxelSplit.cu
+            src/tetrahedralizers/TetCut.cu
+            src/tetrahedralizers/Optimize.cu
         )
         set(TETRAHEDRALIZER_CUDA_LIBS CUDA::cudart)
         set(TETRAHEDRALIZER_HAS_CUDA ON)
@@ -57,18 +61,18 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(glfw)
 
 add_executable(tetrahedralizer
-    src/main.cpp
-    src/FileDialog.cpp
-    src/GlCore.cpp
+    src/viewer/main.cpp
+    src/viewer/FileDialog.cpp
+    src/viewer/GlCore.cpp
     src/TriMesh.cpp
-    src/TriMeshRenderer.cpp
+    src/viewer/TriMeshRenderer.cpp
     src/Tetrahedralizer.cpp
-    src/TetMeshRenderer.cpp
+    src/viewer/TetMeshRenderer.cpp
     ${TETRAHEDRALIZER_CUDA_SOURCES}
-    src/Camera.cpp
-    src/LastPath.cpp
-    src/viewer_imgui_theme.cpp
-    src/viewer_imgui_widgets.cpp
+    src/viewer/Camera.cpp
+    src/viewer/LastPath.cpp
+    src/viewer/viewer_imgui_theme.cpp
+    src/viewer/viewer_imgui_widgets.cpp
     third_party/imgui/imgui.cpp
     third_party/imgui/imgui_draw.cpp
     third_party/imgui/imgui_impl_glfw.cpp

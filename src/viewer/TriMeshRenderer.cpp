@@ -1,4 +1,4 @@
-#include "tetrahedralizer/TriMeshRenderer.h"
+#include "TriMeshRenderer.h"
 
 #define GLFW_INCLUDE_GLU
 #include <GLFW/glfw3.h>

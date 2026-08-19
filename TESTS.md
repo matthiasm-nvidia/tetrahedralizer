@@ -43,15 +43,11 @@ Voxelize a side-3 cube at spacing 1:
 
 ### `test_split_voxels_keeps_interior_connected`
 
-Voxelize a solid cube with `splitVoxels`. Interior voxels must still share nodes (node count well below `8 × voxelCount`); volume and manifold checks match the unsplit mesh.
+Voxelize a solid cube. Interior voxels must still share nodes (node count well below `8 × voxelCount`); volume and manifold checks remain valid.
 
 ### `test_split_voxels_disconnects_nearby_sheets`
 
-Voxelize two nearby parallel triangles in face-adjacent cells. With `splitVoxels` enabled:
-
-- Tet count and total volume stay unchanged
-- Additional node IDs keep the sheets topologically disconnected
-- Tet volumes, face usage, and neighbors remain valid
+Voxelize two nearby parallel triangles in face-adjacent cells. Additional node IDs keep the sheets topologically disconnected; tet volumes, face usage, and neighbors remain valid.
 
 ### `test_subdivision_preserves_manifold_volume`
 
@@ -68,7 +64,11 @@ Run the full create pipeline with `maxEdgeLength = 1.1`. Checks manifold / posit
 
 ### `test_project_to_input_mesh_smoke`
 
-Voxelize a cube with `projectToInputMesh`. Boundary refinement increases the tet/node counts, preserves a valid manifold mesh, and leaves every tet with at most one boundary face before projection.
+Voxelize a cube with `projectToInputMesh` (normal raycast). Some boundary nodes move, tet/node counts match the unprojected mesh, and the mesh stays manifold with at most one boundary face per tet.
+
+### `test_project_to_closest_point_smoke`
+
+Same cube with `projectToClosestPoint`. Some boundary nodes move; manifold and boundary-face checks match the raycast smoke test.
 
 ### `test_boundary_refinement_stays_conforming`
 

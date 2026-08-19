@@ -10,7 +10,7 @@ namespace tetrahedralizer
 namespace tet_cut
 {
 
-// Edge / face layout matches D:\GIT\tet-cut (Ruprecht–Müller-style tables).
+// Edge / face layout matches Ruprecht–Müller-style tet-cut tables.
 // bit0=01, bit1=12, bit2=20, bit3=03, bit4=13, bit5=23
 constexpr int kTetEdges[6][2] = {
     {0, 1}, {1, 2}, {2, 0}, {0, 3}, {1, 3}, {2, 3},

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "tetrahedralizer/GlCore.h"
+#include "GlCore.h"
 #include "tetrahedralizer/Vec.h"
 
 #include <cstdint>

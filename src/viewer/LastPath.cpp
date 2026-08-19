@@ -1,4 +1,4 @@
-#include "tetrahedralizer/LastPath.h"
+#include "LastPath.h"
 
 #include <fstream>
 #include <string>

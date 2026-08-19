@@ -17,13 +17,10 @@
 using tetrahedralizer::Tetrahedralizer;
 using tetrahedralizer::TetrahedralizerParams;
 using tetrahedralizer::Vec3;
+using tetrahedralizer::tet_cut::kTetFaces;
 
 namespace
 {
-
-constexpr int kTetFaces[4][3] = {
-    {0, 1, 2}, {0, 1, 3}, {0, 2, 3}, {1, 2, 3},
-};
 
 std::string faceKey(int a, int b, int c)
 {
