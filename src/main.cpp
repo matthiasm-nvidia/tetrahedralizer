@@ -24,6 +24,10 @@
 namespace
 {
 constexpr float kBaseCameraSpeed = 0.075f;
+constexpr int kAppWindowWidth = 2600;
+constexpr int kAppWindowHeight = 1400;
+constexpr float kGuiWindowWidth = 320.0f;
+constexpr float kGuiWindowHeight = 1000.0f;
 
 struct AppState
 {
@@ -35,7 +39,7 @@ struct AppState
     int hole_close_radius = 0;
     int optimization_iterations = 15;
     float volume_factor = 0.8f;
-    bool split_voxels = true;
+    float edge_contraction = 0.0f;
     float max_edge_length = 0.0f;
     bool project_to_input_mesh = true;
     // Percentage of the mesh bounds cut away along each axis, 0 disables the clip plane.
@@ -95,7 +99,7 @@ bool imguiWantsMouse()
 }
 
 void createTets(const tetrahedralizer::TriMesh& mesh, float voxel_spacing, int hole_close_radius,
-                int optimization_iterations, float volume_factor, bool split_voxels, float max_edge_length,
+                int optimization_iterations, float volume_factor, float edge_contraction, float max_edge_length,
                 bool project_to_input_mesh, tetrahedralizer::Tetrahedralizer& tets,
                 tetrahedralizer::TetMeshRenderer& tet_renderer)
 {
@@ -106,7 +110,7 @@ void createTets(const tetrahedralizer::TriMesh& mesh, float voxel_spacing, int h
         params.holeCloseRadius = hole_close_radius;
         params.numOptimizationIterations = optimization_iterations;
         params.volumeFactor = volume_factor;
-        params.splitVoxels = split_voxels;
+        params.edgeContraction = edge_contraction;
         params.maxEdgeLength = max_edge_length;
         params.projectToInputMesh = project_to_input_mesh;
         tets.create(mesh.positions, mesh.triangle_indices, params);
@@ -262,7 +266,7 @@ int main()
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_COMPAT_PROFILE);
 
-    GLFWwindow* window = glfwCreateWindow(3200, 1800, "Tetrahedralizer", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(kAppWindowWidth, kAppWindowHeight, "Tetrahedralizer", nullptr, nullptr);
     if (window == nullptr)
     {
         std::fprintf(stderr, "Failed to create window\n");
@@ -344,7 +348,7 @@ int main()
         }
 
         ImGui_ImplGLFW_NewFrame();
-        ImGui::SetNextWindowSize(ImVec2(320.0f, 600.0f), ImGuiSetCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(kGuiWindowWidth, kGuiWindowHeight), ImGuiSetCond_FirstUseEver);
         ImGui::Begin("Controls");
         const float spacing = ImGui::GetStyle().ItemSpacing.x;
         const float half_width = (ImGui::GetContentRegionAvail().x - spacing) * 0.5f;
@@ -367,12 +371,12 @@ int main()
             viewer::imgui_widgets::slider_int("Hole close", &state.hole_close_radius, 0, 5);
             viewer::imgui_widgets::slider_int("Opt iters", &state.optimization_iterations, 0, 50);
             viewer::imgui_widgets::slider_float("Volume factor", &state.volume_factor, 0.1f, 1.5f);
-            viewer::imgui_widgets::checkbox("Split voxels", &state.split_voxels);
+            viewer::imgui_widgets::slider_float("Edge contraction", &state.edge_contraction, 0.0f, 1.0f);
             viewer::imgui_widgets::slider_float("Max edge length", &state.max_edge_length, 0.0f, 0.2f);
             viewer::imgui_widgets::checkbox("Project to mesh", &state.project_to_input_mesh);
             if (viewer::imgui_widgets::button_full_width("Create tets"))
                 createTets(mesh, state.voxel_spacing, state.hole_close_radius, state.optimization_iterations,
-                           state.volume_factor, state.split_voxels, state.max_edge_length,
+                           state.volume_factor, state.edge_contraction, state.max_edge_length,
                            state.project_to_input_mesh, tets, tet_renderer);
             viewer::imgui_widgets::checkbox("Show tets", &show_tets);
             viewer::imgui_widgets::checkbox("Tet wireframe", &tet_wireframe);

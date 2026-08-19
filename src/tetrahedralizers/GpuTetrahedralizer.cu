@@ -241,7 +241,6 @@ struct TetDeviceData
     DeviceBuffer<std::uint32_t> meshIndices;
     DeviceBuffer<std::uint64_t> voxels;
     DeviceBuffer<int> firstVoxel;
-    DeviceBuffer<std::uint64_t> cornerCoords;
     DeviceBuffer<int> connectedVoxelFaces;
     DeviceBuffer<int> mergedCornerIds;
     DeviceBuffer<int> nodeOffsets;
@@ -276,7 +275,6 @@ struct TetDeviceData
         meshIndices.free();
         voxels.free();
         firstVoxel.free();
-        cornerCoords.free();
         connectedVoxelFaces.free();
         mergedCornerIds.free();
         nodeOffsets.free();
@@ -403,29 +401,6 @@ __global__ void createTriangleVoxels(TetDeviceData data, bool countOnly)
 
     if (countOnly)
         data.firstVoxel[triangleIndex] = count;
-}
-
-__global__ void createCornerCoords(TetDeviceData data)
-{
-    CUDA_THREAD_GUARD(index, data.numVoxels * 8)
-    const int voxelIndex = index / 8;
-    const int corner = index % 8;
-    int x, y, z;
-    unpackCoords(data.voxels[voxelIndex], x, y, z);
-    data.cornerCoords[index] =
-        packCoords(x + kVoxelCorners[corner][0],
-                   y + kVoxelCorners[corner][1],
-                   z + kVoxelCorners[corner][2]);
-}
-
-__global__ void createNodes(TetDeviceData data)
-{
-    CUDA_THREAD_GUARD(nodeIndex, data.numNodes)
-    int x, y, z;
-    unpackCoords(data.cornerCoords[nodeIndex], x, y, z);
-    data.nodes[nodeIndex].x = data.worldOrigin.x + static_cast<float>(x) * data.gridSpacing;
-    data.nodes[nodeIndex].y = data.worldOrigin.y + static_cast<float>(y) * data.gridSpacing;
-    data.nodes[nodeIndex].z = data.worldOrigin.z + static_cast<float>(z) * data.gridSpacing;
 }
 
 __device__ bool faceIntersectsInputMesh(const TetDeviceData& data, const DeviceVec3& center,
@@ -568,7 +543,7 @@ __global__ void createSplitNodes(TetDeviceData data)
              data.worldOrigin.z + static_cast<float>(z + kVoxelCorners[corner][2]) * data.gridSpacing);
 }
 
-__global__ void createTets(TetDeviceData data, bool splitVoxels)
+__global__ void createTets(TetDeviceData data)
 {
     CUDA_THREAD_GUARD(voxelIndex, data.numVoxels)
     int x, y, z;
@@ -577,13 +552,7 @@ __global__ void createTets(TetDeviceData data, bool splitVoxels)
 
     int cornerIds[8];
     for (int corner = 0; corner < 8; ++corner)
-    {
-        cornerIds[corner] =
-            splitVoxels ? data.voxelCornerNodes[8 * voxelIndex + corner]
-                        : findCoord(data.cornerCoords,
-                                    packCoords(x + kVoxelCorners[corner][0], y + kVoxelCorners[corner][1],
-                                               z + kVoxelCorners[corner][2]));
-    }
+        cornerIds[corner] = data.voxelCornerNodes[8 * voxelIndex + corner];
 
     for (int tet = 0; tet < 5; ++tet)
     {
@@ -662,6 +631,32 @@ __global__ void smoothAccumulate(TetDeviceData data, float volumeFactor)
     {
         AtomicAdd(data.smoothOffsets.buffer + ids[corner], targets[corner] - positions[corner]);
         AtomicAdd(data.smoothCounts.buffer + ids[corner], 1);
+    }
+}
+
+// Pull each tet edge's endpoints toward each other by contraction and accumulate the deltas.
+__global__ void smoothAccumulateEdges(TetDeviceData data, float contraction)
+{
+    CUDA_THREAD_GUARD(tetIndex, data.numTets)
+
+    int ids[4];
+    Vec3 positions[4];
+    for (int corner = 0; corner < 4; ++corner)
+    {
+        ids[corner] = data.tetIndices[4 * tetIndex + corner];
+        positions[corner] = data.nodes[ids[corner]];
+    }
+
+    for (int i = 0; i < 4; ++i)
+    {
+        for (int j = i + 1; j < 4; ++j)
+        {
+            const Vec3 delta = (positions[j] - positions[i]) * contraction;
+            AtomicAdd(data.smoothOffsets.buffer + ids[i], delta);
+            AtomicAdd(data.smoothOffsets.buffer + ids[j], -delta);
+            AtomicAdd(data.smoothCounts.buffer + ids[i], 1);
+            AtomicAdd(data.smoothCounts.buffer + ids[j], 1);
+        }
     }
 }
 
@@ -786,6 +781,26 @@ void smoothTets(TetDeviceData& data, int iterations, float volumeFactor, const V
         data.smoothCounts.setZero();
         data.moveOffsets.setZero();
         CUDA_LAUNCH(smoothAccumulate, data.numTets, data, volumeFactor);
+        CUDA_LAUNCH(smoothApply, data.numNodes, data, normals);
+        applyNodeMovesSafely(data);
+    }
+    cudaCheck(cudaDeviceSynchronize());
+}
+
+void smoothEdges(TetDeviceData& data, int iterations, float contraction, const Vec3* normals = nullptr)
+{
+    if (iterations <= 0 || !(contraction > 0.0f) || data.numTets <= 0 || data.numNodes <= 0)
+        return;
+
+    data.smoothOffsets.resize(static_cast<std::size_t>(data.numNodes));
+    data.smoothCounts.resize(static_cast<std::size_t>(data.numNodes));
+    data.moveOffsets.resize(static_cast<std::size_t>(data.numNodes), false);
+    for (int iteration = 0; iteration < iterations; ++iteration)
+    {
+        data.smoothOffsets.setZero();
+        data.smoothCounts.setZero();
+        data.moveOffsets.setZero();
+        CUDA_LAUNCH(smoothAccumulateEdges, data.numTets, data, contraction);
         CUDA_LAUNCH(smoothApply, data.numNodes, data, normals);
         applyNodeMovesSafely(data);
     }
@@ -1508,11 +1523,23 @@ void runOptimization(TetDeviceData& data, const TetrahedralizerParams& params)
         {
             computeSurfaceNormals(data, normals);
             projectSurfaceNodesToInputMesh(data, normals.buffer, params.voxelSpacing);
-            smoothTets(data, 1, params.volumeFactor, normals.buffer);
         }
-        else
+
+        const Vec3* smoothNormals = nullptr;
+        if (project)
         {
-            smoothTets(data, 1, params.volumeFactor, nullptr);
+            computeSurfaceNormals(data, normals);
+            smoothNormals = normals.buffer;
+        }
+        smoothTets(data, 1, params.volumeFactor, smoothNormals);
+        if (params.edgeContraction > 0.0f)
+        {
+            if (project)
+            {
+                computeSurfaceNormals(data, normals);
+                smoothNormals = normals.buffer;
+            }
+            smoothEdges(data, 1, params.edgeContraction, smoothNormals);
         }
     }
     normals.free();
@@ -1550,6 +1577,8 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
         throw std::invalid_argument("Optimization iteration count must be non-negative");
     if (!(params.volumeFactor > 0.0f) || !std::isfinite(params.volumeFactor))
         throw std::invalid_argument("Volume factor must be finite and greater than zero");
+    if (!(params.edgeContraction >= 0.0f) || !std::isfinite(params.edgeContraction))
+        throw std::invalid_argument("Edge contraction must be finite and non-negative");
     if (!(params.maxEdgeLength >= 0.0f) || !std::isfinite(params.maxEdgeLength))
         throw std::invalid_argument("Maximum edge length must be finite and non-negative");
     if (mesh_indices.size() / 3 > static_cast<std::size_t>(std::numeric_limits<int>::max()))
@@ -1665,33 +1694,18 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
         data.numVoxels = solidVoxelCount;
         sortAndUnique(data.voxels, data.numVoxels);
 
-        if (params.splitVoxels || params.projectToInputMesh)
-            buildInputMeshBvh(data);
+        buildInputMeshBvh(data);
 
         if (data.numVoxels > std::numeric_limits<int>::max() / 8)
             throw std::runtime_error("Voxel corner count exceeds the supported range");
 
-        int cornerCount = data.numVoxels * 8;
-        if (params.splitVoxels)
-        {
-            createSplitVoxelNodes(data);
-        }
-        else
-        {
-            data.cornerCoords.resize(static_cast<std::size_t>(cornerCount), false);
-            CUDA_LAUNCH(createCornerCoords, cornerCount, data);
-            sortAndUnique(data.cornerCoords, cornerCount);
-
-            data.numNodes = cornerCount;
-            data.nodes.resize(static_cast<std::size_t>(data.numNodes), false);
-            CUDA_LAUNCH(createNodes, data.numNodes, data);
-        }
+        createSplitVoxelNodes(data);
 
         if (data.numVoxels > std::numeric_limits<int>::max() / 5)
             throw std::runtime_error("Tet count exceeds the supported range");
         data.numTets = data.numVoxels * 5;
         data.tetIndices.resize(static_cast<std::size_t>(data.numTets) * 4, false);
-        CUDA_LAUNCH(createTets, data.numVoxels, data, params.splitVoxels);
+        CUDA_LAUNCH(createTets, data.numVoxels, data);
 
         if (params.maxEdgeLength > 0.0f)
             subdivideLongEdges(data, params.maxEdgeLength);

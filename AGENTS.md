@@ -20,6 +20,7 @@ See `TESTS.md` for the test suite and how to run `test.bat`.
 ## Building
 
 - Build with `build.bat` in the repo root. It locates Visual Studio, sets up the environment, and builds both Debug and Release. Do not invoke `cmake --build` directly from a plain shell, as the MSVC/CUDA compiler environment will not be set up.
+- After applying code changes, always run `build.bat` before finishing. `test.bat` only builds the test binary; it does not update the viewer executable.
 
 ## Tests
 

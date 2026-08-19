@@ -14,19 +14,19 @@ struct TetrahedralizerParams
     // Morphological close radius in voxels before the exterior flood fill.
     // 0 skips closing; larger values seal bigger shell holes.
     int holeCloseRadius = 0;
-    // Keep adjacent surface voxels disconnected unless input geometry crosses
-    // their shared face. Interior voxels remain connected.
-    bool splitVoxels = true;
     // Subdivide tet edges longer than this value at their midpoints.
     // 0 skips subdivision.
     float maxEdgeLength = 0.0f;
     // Project boundary nodes onto the input mesh along estimated outward normals.
     bool projectToInputMesh = true;
-    // Optimization iterations: each does project (if enabled) then one shape-matching smooth.
-    // Surface nodes only slide tangentially when projection normals are present. 0 skips.
+    // Optimization iterations: each does project (if enabled), tet smoothing, then edge
+    // smoothing. When projecting, surface normals are recomputed before projection and
+    // before each smooth so surface nodes only slide tangentially. 0 skips.
     int numOptimizationIterations = 15;
     // Target regular-tet volume as a fraction of the current tet volume (< 1 contracts).
     float volumeFactor = 0.8f;
+    // Pull opposite endpoints of each tet edge toward each other. 0 skips edge smoothing.
+    float edgeContraction = 0.0f;
 };
 
 class Tetrahedralizer
