@@ -103,6 +103,10 @@ struct TetDeviceData
     DeviceBuffer<int> firstNewTet;
     DeviceBuffer<tet_cut::CutTemplateTables> cutTables;
 
+    // Edge collapse
+    DeviceBuffer<int> collapseMap;
+    DeviceBuffer<Vec3> collapsePositions;
+
     // Optimize / project
     DeviceBuffer<int> anyChanged;
     DeviceBuffer<Vec3> smoothOffsets;
@@ -138,6 +142,8 @@ struct TetDeviceData
         steinerVertexId.free();
         firstNewTet.free();
         cutTables.free();
+        collapseMap.free();
+        collapsePositions.free();
         anyChanged.free();
         smoothOffsets.free();
         smoothCounts.free();
@@ -213,7 +219,9 @@ void buildInputMeshBvh(TetDeviceData& data);
 void createSplitVoxelNodes(TetDeviceData& data);
 void createFiveTets(TetDeviceData& data);
 void subdivideLongEdges(TetDeviceData& data, float maxEdgeLength);
+void collapseShortEdges(TetDeviceData& data, float minEdgeLength);
 bool computeNeighbors(TetDeviceData& data);
+void computeSurfaceNormals(TetDeviceData& data, DeviceBuffer<Vec3>& normals);
 void separateBoundaryFaces(TetDeviceData& data);
 void runOptimization(TetDeviceData& data, const TetrahedralizerParams& params);
 void uploadMeshFromHost(TetDeviceData& data, const Tetrahedralizer& mesh);

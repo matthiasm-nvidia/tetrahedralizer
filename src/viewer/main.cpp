@@ -382,6 +382,7 @@ int main()
             viewer::imgui_widgets::slider_float("Edge contraction", &state.tet_params.edgeContraction, 0.0f, 1.0f);
             viewer::imgui_widgets::checkbox("Edge use normals", &state.tet_params.useNormals);
             viewer::imgui_widgets::slider_float("Max edge length", &state.tet_params.maxEdgeLength, 0.0f, 0.2f);
+            viewer::imgui_widgets::slider_float("Min edge length", &state.tet_params.minEdgeLength, 0.0f, 0.2f);
             viewer::imgui_widgets::checkbox("Project to mesh", &state.tet_params.projectToInputMesh);
             if (state.tet_params.projectToInputMesh)
                 viewer::imgui_widgets::checkbox("Project to closest point", &state.tet_params.projectToClosestPoint);

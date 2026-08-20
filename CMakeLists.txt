@@ -37,6 +37,7 @@ if(TETRAHEDRALIZER_ENABLE_CUDA)
             src/tetrahedralizers/Voxelize.cu
             src/tetrahedralizers/VoxelSplit.cu
             src/tetrahedralizers/TetCut.cu
+            src/tetrahedralizers/TetCollapse.cu
             src/tetrahedralizers/Optimize.cu
         )
         set(TETRAHEDRALIZER_CUDA_LIBS CUDA::cudart)
@@ -96,6 +97,7 @@ if(TETRAHEDRALIZER_HAS_CUDA)
     add_executable(tetrahedralizer_tests
         tests/test_tetrahedralizer.cpp
         src/Tetrahedralizer.cpp
+        src/TriMesh.cpp
         ${TETRAHEDRALIZER_CUDA_SOURCES}
     )
     target_include_directories(tetrahedralizer_tests PRIVATE
@@ -103,7 +105,10 @@ if(TETRAHEDRALIZER_HAS_CUDA)
         ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
     target_link_libraries(tetrahedralizer_tests PRIVATE ${TETRAHEDRALIZER_CUDA_LIBS})
-    target_compile_definitions(tetrahedralizer_tests PRIVATE TETRAHEDRALIZER_HAS_CUDA)
+    file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}/tests/data" TETRAHEDRALIZER_TEST_DATA_DIR)
+    target_compile_definitions(tetrahedralizer_tests PRIVATE
+        TETRAHEDRALIZER_HAS_CUDA
+        TETRAHEDRALIZER_TEST_DATA_DIR="${TETRAHEDRALIZER_TEST_DATA_DIR}")
     if(MSVC)
         target_compile_options(tetrahedralizer_tests PRIVATE
             $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>)

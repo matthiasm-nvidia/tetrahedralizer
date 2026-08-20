@@ -17,6 +17,8 @@ struct TetrahedralizerParams
     // Subdivide tet edges longer than this value at their midpoints.
     // 0 skips subdivision.
     float maxEdgeLength = 0.0f;
+    // Collapse tet edges shorter than this value. 0 skips collapse.
+    float minEdgeLength = 0.0f;
     // Project boundary nodes onto the input mesh along estimated outward normals.
     bool projectToInputMesh = true;
     // When projecting, snap each boundary node to the closest input-mesh point

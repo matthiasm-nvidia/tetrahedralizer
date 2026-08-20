@@ -43,6 +43,8 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
         throw std::invalid_argument("Edge contraction must be finite and non-negative");
     if (!(params.maxEdgeLength >= 0.0f) || !std::isfinite(params.maxEdgeLength))
         throw std::invalid_argument("Maximum edge length must be finite and non-negative");
+    if (!(params.minEdgeLength >= 0.0f) || !std::isfinite(params.minEdgeLength))
+        throw std::invalid_argument("Minimum edge length must be finite and non-negative");
     if (mesh_indices.size() / 3 > static_cast<std::size_t>(std::numeric_limits<int>::max()))
         throw std::runtime_error("Triangle count exceeds the supported range");
 
@@ -109,6 +111,8 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
 
         if (params.maxEdgeLength > 0.0f)
             subdivideLongEdges(data, params.maxEdgeLength);
+        if (params.minEdgeLength > 0.0f)
+            collapseShortEdges(data, params.minEdgeLength);
 
         cudaCheck(cudaDeviceSynchronize());
 

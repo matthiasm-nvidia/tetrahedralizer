@@ -1,6 +1,7 @@
 #include "third_party/minunit.h"
 
 #include "tetrahedralizer/Tetrahedralizer.h"
+#include "tetrahedralizer/TriMesh.h"
 #include "tetrahedralizer/Vec.h"
 #include "tetrahedralizers/TetCutTemplates.h"
 
@@ -404,6 +405,35 @@ MU_TEST(test_subdivision_preserves_manifold_volume)
     mu_check(std::fabs(stats.volume - before.volume) < 5.0e-3f);
 }
 
+MU_TEST(test_min_edge_length_collapses)
+{
+    std::vector<Vec3> vertices;
+    std::vector<std::uint32_t> indices;
+    makeCube(vertices, indices, 3.0f);
+
+    TetrahedralizerParams params;
+    params.voxelSpacing = 1.0f;
+    params.numOptimizationIterations = 0;
+    params.projectToInputMesh = false;
+
+    Tetrahedralizer baseMesh;
+    baseMesh.create(vertices, indices, params);
+
+    params.minEdgeLength = 1.01f;
+    Tetrahedralizer collapsed;
+    collapsed.create(vertices, indices, params);
+    mu_check(!collapsed.empty());
+    mu_check(collapsed.numTets() < baseMesh.numTets());
+    mu_check(collapsed.nodes.size() < baseMesh.nodes.size());
+
+    const MeshStats stats = analyse(collapsed);
+    mu_assert_int_eq(0, stats.badTets);
+    mu_assert_int_eq(0, stats.overusedFaces);
+    mu_assert_int_eq(0, stats.neighborMismatches);
+    mu_assert_int_eq(0, stats.oddBoundaryEdges);
+    mu_check(stats.maxBoundaryFacesPerTet <= 1);
+}
+
 MU_TEST(test_max_edge_length_parameter)
 {
     std::vector<Vec3> vertices;
@@ -639,6 +669,91 @@ MU_TEST(test_smoothing_without_projection_moves_nodes)
     mu_assert_int_eq(0, stats.badTets);
 }
 
+MU_TEST(test_dragon_voxel_spacing)
+{
+    tetrahedralizer::TriMesh mesh;
+    const std::string path = std::string(TETRAHEDRALIZER_TEST_DATA_DIR) + "/dragon.obj";
+    mu_assert(mesh.loadObj(path.c_str()), "failed to load tests/data/dragon.obj");
+    mu_check(!mesh.empty());
+
+    TetrahedralizerParams params;
+    params.voxelSpacing = 0.1f;
+    params.numOptimizationIterations = 0;
+    params.projectToInputMesh = false;
+
+    Tetrahedralizer tets;
+    tets.create(mesh.positions, mesh.triangle_indices, params);
+    mu_check(!tets.empty());
+    mu_check(tets.numTets() > 0);
+
+    const MeshStats stats = analyse(tets);
+    mu_assert_int_eq(0, stats.badTets);
+    mu_assert_int_eq(0, stats.overusedFaces);
+    mu_assert_int_eq(0, stats.neighborMismatches);
+    mu_assert_int_eq(0, stats.oddBoundaryEdges);
+    mu_check(stats.maxBoundaryFacesPerTet <= 1);
+}
+
+MU_TEST(test_dragon_collapse_stays_manifold)
+{
+    tetrahedralizer::TriMesh mesh;
+    const std::string path = std::string(TETRAHEDRALIZER_TEST_DATA_DIR) + "/dragon.obj";
+    mu_assert(mesh.loadObj(path.c_str()), "failed to load tests/data/dragon.obj");
+    mu_check(!mesh.empty());
+
+    TetrahedralizerParams params;
+    params.voxelSpacing = 0.1f;
+    params.minEdgeLength = 0.16f;
+    params.numOptimizationIterations = 0;
+    params.projectToInputMesh = false;
+
+    Tetrahedralizer tets;
+    try
+    {
+        tets.create(mesh.positions, mesh.triangle_indices, params);
+    }
+    catch (const std::exception& error)
+    {
+        mu_fail(error.what());
+    }
+    mu_check(!tets.empty());
+
+    const MeshStats stats = analyse(tets);
+    mu_assert_int_eq(0, stats.overusedFaces);
+    mu_assert_int_eq(0, stats.neighborMismatches);
+    mu_assert_int_eq(0, stats.oddBoundaryEdges);
+}
+
+MU_TEST(test_dragon_collapse_fine_stays_manifold)
+{
+    tetrahedralizer::TriMesh mesh;
+    const std::string path = std::string(TETRAHEDRALIZER_TEST_DATA_DIR) + "/dragon.obj";
+    mu_assert(mesh.loadObj(path.c_str()), "failed to load tests/data/dragon.obj");
+    mu_check(!mesh.empty());
+
+    TetrahedralizerParams params;
+    params.voxelSpacing = 0.05f;
+    params.minEdgeLength = 0.1f;
+    params.numOptimizationIterations = 0;
+    params.projectToInputMesh = false;
+
+    Tetrahedralizer tets;
+    try
+    {
+        tets.create(mesh.positions, mesh.triangle_indices, params);
+    }
+    catch (const std::exception& error)
+    {
+        mu_fail(error.what());
+    }
+    mu_check(!tets.empty());
+
+    const MeshStats stats = analyse(tets);
+    mu_assert_int_eq(0, stats.overusedFaces);
+    mu_assert_int_eq(0, stats.neighborMismatches);
+    mu_assert_int_eq(0, stats.oddBoundaryEdges);
+}
+
 MU_TEST_SUITE(test_suite)
 {
     MU_RUN_TEST(test_cut_templates_tile_reference);
@@ -646,6 +761,7 @@ MU_TEST_SUITE(test_suite)
     MU_RUN_TEST(test_split_voxels_keeps_interior_connected);
     MU_RUN_TEST(test_split_voxels_disconnects_nearby_sheets);
     MU_RUN_TEST(test_subdivision_preserves_manifold_volume);
+    MU_RUN_TEST(test_min_edge_length_collapses);
     MU_RUN_TEST(test_max_edge_length_parameter);
     MU_RUN_TEST(test_project_to_input_mesh_smoke);
     MU_RUN_TEST(test_project_to_closest_point_smoke);
@@ -653,6 +769,9 @@ MU_TEST_SUITE(test_suite)
     MU_RUN_TEST(test_optimization_loop_smoke);
     MU_RUN_TEST(test_node_normals_mark_boundary);
     MU_RUN_TEST(test_smoothing_without_projection_moves_nodes);
+    MU_RUN_TEST(test_dragon_voxel_spacing);
+    MU_RUN_TEST(test_dragon_collapse_stays_manifold);
+    MU_RUN_TEST(test_dragon_collapse_fine_stays_manifold);
 }
 
 int main()

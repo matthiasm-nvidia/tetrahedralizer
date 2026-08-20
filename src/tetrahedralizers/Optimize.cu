@@ -424,14 +424,6 @@ __global__ void projectSurfaceNodesToClosestPoint(TetDeviceData data, const Vec3
     data.moveOffsets[nodeIndex] = closestPos - query;
 }
 
-void computeSurfaceNormals(TetDeviceData& data, DeviceBuffer<Vec3>& normals)
-{
-    normals.resize(static_cast<std::size_t>(data.numNodes), false);
-    normals.setZero();
-    CUDA_LAUNCH(accumulateSurfaceNormals, data.numTets, data, normals.buffer);
-    CUDA_LAUNCH(normalizeSurfaceNormals, data.numNodes, normals.buffer, data.numNodes);
-}
-
 void projectSurfaceNodesToInputMesh(TetDeviceData& data, const Vec3* normals, float voxelSpacing)
 {
     if (data.numNodes <= 0 || data.numTets <= 0 || !normals)
@@ -464,6 +456,14 @@ void projectBoundaryNodes(TetDeviceData& data, const Vec3* normals, const Tetrah
 }
 
 } // namespace
+
+void computeSurfaceNormals(TetDeviceData& data, DeviceBuffer<Vec3>& normals)
+{
+    normals.resize(static_cast<std::size_t>(data.numNodes), false);
+    normals.setZero();
+    CUDA_LAUNCH(accumulateSurfaceNormals, data.numTets, data, normals.buffer);
+    CUDA_LAUNCH(normalizeSurfaceNormals, data.numNodes, normals.buffer, data.numNodes);
+}
 
 void runOptimization(TetDeviceData& data, const TetrahedralizerParams& params)
 {

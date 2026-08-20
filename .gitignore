@@ -29,6 +29,7 @@ last_mesh.txt
 # Compiled objects / binaries
 *.o
 *.obj
+!tests/data/*.obj
 *.exe
 *.dll
 *.so
