@@ -38,6 +38,7 @@ See `TetrahedralizerParams` in `include/tetrahedralizer/Tetrahedralizer.h`.
 - Face-aware voxel splitting before tet creation
 - Five-tet voxel decomposition → node positions and tet indices
 - Optional maximum-edge-length subdivision using midpoint vertices and template-based tet subdivision
+- Optional minimum-edge-length collapse (one shot, before optimize)
 - Optional projection of boundary nodes onto the input mesh (outward-normal raycast or closest point)
 - Optional optimization loop: tet smoothing, edge smoothing, then project
 - Face-neighbor table (`tet_neighbors`, 4 slots per tet) via sorted face pairing
@@ -45,7 +46,7 @@ See `TetrahedralizerParams` in `include/tetrahedralizer/Tetrahedralizer.h`.
 
 ### Not implemented yet
 
-- Collapse short edges
+- Adaptive mesh (curvature size field, visualization, split/collapse inside optimize)
 
 ### Voxel split pipeline
 
@@ -128,6 +129,58 @@ Before projection, boundary topology is refined until no tet edge has both oppos
 Projection and smoothing never write node positions directly. Both fill a per-node offset buffer, and `applyNodeMovesSafely` then halves the step of every node belonging to a tet that the move would shrink below `kMinMoveVolumeFraction` of its current volume, repeating until no tet is affected (a step below `kMinMoveScale` becomes zero, which restores the original corners, so the loop always terminates). Without this backoff interior midpoints added by boundary refinement can cross a boundary face and produce spikes.
 
 **Optimization** (`numOptimizationIterations` times): tet smoothing if `volumeContraction > 0`, then edge smoothing if `edgeContraction > 0`, then project if enabled. Tet smoothing shape-matches to a regular tet. With projection on, surface nodes keep only the tangential part of the tet-smooth correction (`corr -= n * dot(corr, n)`). Edge smoothing with `useNormals` on contracts every edge then strips the normal component on surface nodes; with it off, mixed interior/surface edges move only the interior node. With iterations `0` and projection on, projection runs once.
+
+### Adaptive mesh
+
+Not implemented. Goal: a spatially varying surface edge length so split/collapse capture input curvature, instead of the current global `maxEdgeLength` / `minEdgeLength`.
+
+Uniform one-shot split then collapse before optimize is enough on the voxel grid. It is not enough once nodes sit on the real surface: projection lengthens edges on convex regions and shortens them on concave ones, and both split and surface–surface collapse place nodes at chord midpoints that are off the surface until project runs. Adaptive sizing should live in the optimize loop.
+
+#### Size field on the input mesh
+
+Store one scalar per **input-mesh vertex** (parallel to `positions`): the local maximum surface edge length `h_max`. Tet nodes do not own the field; they sample it later. A tet edge uses the **minimum** of its endpoint samples (or the minimum of a triangle's three vertices) so the stricter vertex wins.
+
+Do not use mean curvature. It can vanish at a saddle while the surface still bends. Use **maximum turning** (max |principal curvature| κ), from vertex-normal variation, which also works on non-manifold input:
+
+1. Area-weighted vertex normals from incident input faces.
+2. For each input edge `(i, j)` of length `L`, with unit normals `n_i`, `n_j`: turning angle `α = angle(n_i, n_j)`, then `κ = 2 sin(α/2) / L` (osculating circle). `R = 1/κ`.
+3. At each vertex, take the **maximum** κ over incident edges.
+
+The user-facing parameter is a geometric error `ε` (max distance from a surface chord to the input), not a global edge length. After projection, a surface tet edge is a chord of the input. For radius `R`:
+
+- `h ≤ 2 √(2 R ε − ε²)` if `ε < R`
+- `h ≈ √(8 R ε)` when `ε ≪ R`
+
+So `h_max = clamp(√(8 ε / κ), h_min, h_max_global)` with κ floored so flat regions do not explode. Practical clamps: floor around `voxelSpacing` (the voxel tet mesh cannot resolve below that until you subdivide); ceiling at the current coarse size so interiors and flat walls stay cheap. Interior tet edges keep a large cap; curvature does not apply there.
+
+Isotropic sizing from |κ|_max is the first version (a cylinder is over-refined along the axis). Anisotropic sizing, local feature size / medial axis, and a posteriori chordal-error refinement are later.
+
+#### Smoothing
+
+Tessellation noise spikes κ. Smooth **`h_max`**, not κ: averaging curvature and then taking `√(1/κ)` still maps a leftover spike to a tiny edge. Same accumulate/apply pattern as tet and edge smoothing, a few iterations (about 2–5); more washes out real features.
+
+1. **Accumulate** (one thread per input triangle): mean of the three vertex values, `atomicAdd` that mean onto each vertex and `atomicAdd` 1 onto each count.
+2. **Apply** (one thread per vertex): `value = sum / count`.
+
+The triangle mean includes the vertex itself, so each step keeps about a third of the old value. Area-weighted `atomicAdd(mean * area)` / `count += area` is optional. To preserve creases later, lock vertices with a large dihedral rather than mixing the unsmoothed field back in.
+
+#### Visualization
+
+First implementation: compute the field (CPU is enough) and color the **input mesh**, not the tets. Color `h_max` (log-scaled colormap, range slider): long/blue = flat, short/red = high curvature. Sanity checks: a cube is cold on faces and hot on the 12 edges; the dragon is fine on the body and tight on horns, claws, and the mouth. Salt-and-pepper means the smoother needs more iterations or the input has folded triangles.
+
+#### Remesh inside optimize
+
+Once the field looks right, drive split/collapse with the local threshold instead of a scalar. Lookup: closest input triangle (BVH / closest-point, min of its vertices) or splat `min(h)` into surface voxels during voxelization.
+
+Put topology at the **start** of each optimize iteration so the existing end-of-iteration project snaps new nodes back. Last iteration must end with project, not with split/collapse. Hysteresis so split and collapse do not fight (`h_min ≈ 0.4–0.5` of local `h_max`):
+
+1. Split surface tet edges longer than local `h_max`.
+2. Collapse edges shorter than local `h_min` (surface–surface → midpoint; mixed → keep the surface node).
+3. Rebuild neighbors and **separate boundary faces** (split and collapse can create tets with two opposite boundary faces; projection still forbids that).
+4. Tet smooth, then edge smooth.
+5. Project.
+
+Do not project after every collapse kernel; once per iteration after topology has settled is enough. Interior collapses do not need it. Topology every iteration is not required: every *k* iterations, or until no splits/collapses fire, is fine, but geometry still needs a project after the last topology change.
 
 ## Layout
 
