@@ -1,6 +1,6 @@
 # Tests
 
-GPU / host regression checks for tetrahedralization, edge subdivision, and face neighbors.
+GPU / host regression checks for tetrahedralization, edge subdivision, adaptive remesh, and face neighbors.
 Run with:
 
 ```bat
@@ -60,11 +60,11 @@ Start from the 3×3×3 voxel mesh and call `subdivide(1.1)`. Checks:
 
 ### `test_adaptive_off_ignores_edge_scales`
 
-Cube create with tight min/max and a small ε, but `adaptive` off. Node and tet counts match the default (non-adaptive) run.
+Cube create with tight min/max and a small ε, but `numAdaptiveIterations = 0`. Node and tet counts match the default (non-adaptive) run.
 
 ### `test_max_edge_length_parameter`
 
-Adaptive create with `maxEdgeLength = 1.1` (voxel units) on a cube. Checks manifold / positive volumes and increased node and tet counts relative to the unsubdivided mesh. Volume is not compared: adaptive remesh edge-smooths before splitting.
+Adaptive create with `numAdaptiveIterations = 1` and `maxEdgeLength = 1.1` (voxel units) on a cube (smooth contractions off). Checks manifold / positive volumes and increased node and tet counts relative to the unsubdivided mesh.
 
 ### `test_project_to_input_mesh_smoke`
 
@@ -83,6 +83,46 @@ Conformity uses `oddBoundaryEdges`: every boundary edge must be used by an even 
 ### `test_optimization_loop_smoke`
 
 Voxelize a cube with `projectToInputMesh` and `numOptimizationIterations = 5`. Checks the mesh stays manifold with boundary faces, with at most one boundary face per tet, after smooth→project loops.
+
+### `test_node_normals_mark_boundary`
+
+Voxelized cube. `nodeNormals()` is unit-length and outward on boundary nodes, zero on interior nodes.
+
+### `test_smoothing_without_projection_moves_nodes`
+
+Cube with five optimization iterations, projection off. Node and tet counts stay the same; some nodes move; the mesh stays manifold.
+
+### `test_dragon_voxel_spacing`
+
+Load `tests/data/dragon.obj`, voxelize at spacing `0.1` with optimize/project off. Mesh is non-empty, manifold, positive volumes, at most one boundary face per tet.
+
+### `test_dragon_adaptive_stays_manifold`
+
+Same dragon at spacing `0.1` with `numAdaptiveIterations = 1` (opt/project off). Stays manifold after one size-field split pass.
+
+### `test_dragon_adaptive_fine_stays_manifold`
+
+Same as above at spacing `0.05`.
+
+### `test_adaptive_size_field_cube_stays_manifold`
+
+Cube create with `numAdaptiveIterations = 1` and a small ε. Stays manifold with at most one boundary face per tet.
+
+### `test_adaptive_size_field_refines_curved`
+
+Octahedron at spacing `0.25`. Adaptive create with a small ε produces more tets than the non-adaptive run and stays manifold.
+
+### `test_size_field_flat_is_coarse`
+
+Host-only. A flat quad's size field is at the global ceiling (no turning).
+
+### `test_size_field_turning_refines`
+
+Host-only. A bent pair of triangles gets a smaller `h_max` at the crease than a flat quad.
+
+### `test_cpu_bvh_raycast_hits_triangle`
+
+Host-only. CPU BVH raycast hits a known triangle at the expected `t` and misses a ray that does not intersect.
 
 ## Adding tests
 

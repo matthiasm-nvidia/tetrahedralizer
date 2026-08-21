@@ -14,13 +14,14 @@ struct TetrahedralizerParams
     // Morphological close radius in voxels before the exterior flood fill.
     // 0 skips closing; larger values seal bigger shell holes.
     int holeCloseRadius = 0;
-    // One-shot adaptive remesh after tet creation (size field, then split).
-    bool adaptive = false;
-    // Floor for h_max, in voxel spacings. Used only when adaptive is on.
+    // Extra loop iterations after the opt-only phase; each starts with a size-field
+    // split. 0 skips adaptivity.
+    int numAdaptiveIterations = 0;
+    // Floor for h_max, in voxel spacings. Used only when numAdaptiveIterations > 0.
     float minEdgeLength = 0.5f;
-    // Ceiling for h_max, in voxel spacings. Used only when adaptive is on.
+    // Ceiling for h_max, in voxel spacings. Used only when numAdaptiveIterations > 0.
     float maxEdgeLength = 2.0f;
-    // Max chordal error ε, in voxel spacings. Used only when adaptive is on.
+    // Max chordal error ε, in voxel spacings. Used only when numAdaptiveIterations > 0.
     float geometricError = 0.1f;
     // Jacobi-style averaging of h_max on the input mesh before sampling.
     int sizeFieldSmoothingIterations = 3;
@@ -29,10 +30,11 @@ struct TetrahedralizerParams
     // When projecting, snap each boundary node to the closest input-mesh point
     // instead of raycasting along its estimated normal. No offset; moves inward or outward.
     bool projectToClosestPoint = false;
-    // Optimization iterations: each does tet smoothing, then edge smoothing, then
-    // project (if enabled). When projecting, surface normals are recomputed before
-    // each smooth so surface nodes only slide tangentially, and again before project.
-    // 0 skips the optimization loop, including projection.
+    // Optimization iterations before adaptivity. The loop runs this many plus
+    // numAdaptiveIterations: tet smoothing, then edge smoothing, then project (if
+    // enabled). Split runs only on the adaptive iterations. When projecting, surface
+    // normals are recomputed before each smooth so surface nodes only slide
+    // tangentially, and again before project. 0 of both skips the loop.
     int numOptimizationIterations = 15;
     // Fraction of current tet volume to remove while shape-matching to a regular tet.
     // 0 skips tet smoothing; 0.2 targets 80% of the current volume.

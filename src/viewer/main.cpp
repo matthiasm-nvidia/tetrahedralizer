@@ -517,9 +517,10 @@ int main()
                 state.size_field_dirty = true;
             viewer::imgui_widgets::slider_int("Hole close", &state.tet_params.holeCloseRadius, 0, 5);
             viewer::imgui_widgets::section_separator();
-            if (viewer::imgui_widgets::checkbox("Adaptive", &state.tet_params.adaptive))
+            viewer::imgui_widgets::slider_int("Opt iters", &state.tet_params.numOptimizationIterations, 0, 50);
+            if (viewer::imgui_widgets::slider_int("Adaptive iters", &state.tet_params.numAdaptiveIterations, 0, 50))
                 state.size_field_dirty = true;
-            if (state.tet_params.adaptive)
+            if (state.tet_params.numAdaptiveIterations > 0)
             {
                 if (viewer::imgui_widgets::slider_float("Min edge (x voxel)", &state.tet_params.minEdgeLength, 0.1f,
                                                         2.0f))
@@ -538,7 +539,6 @@ int main()
                     state.size_field_dirty = true;
             }
             viewer::imgui_widgets::section_separator();
-            viewer::imgui_widgets::slider_int("Opt iters", &state.tet_params.numOptimizationIterations, 0, 50);
             viewer::imgui_widgets::slider_float("Volume contraction", &state.tet_params.volumeContraction, 0.0f, 1.0f);
             viewer::imgui_widgets::slider_float("Edge contraction", &state.tet_params.edgeContraction, 0.0f, 1.0f);
             viewer::imgui_widgets::checkbox("Edge use normals", &state.tet_params.useNormals);

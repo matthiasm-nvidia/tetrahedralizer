@@ -9,11 +9,6 @@ namespace tetrahedralizer
 namespace
 {
 
-constexpr int kAdaptiveRemeshPasses = 16;
-// Pre-split edge smoothing (commented out in runAdaptiveRemesh).
-// constexpr int kAdaptiveSmoothIterations = 3;
-// constexpr float kDefaultEdgeContraction = 0.2f;
-
 __global__ void sampleNodeSizes(TetDeviceData data, const Vec3* normals, float maxSize)
 {
     CUDA_THREAD_GUARD(nodeIndex, data.numNodes)
@@ -55,31 +50,17 @@ void sampleSurfaceNodeSizes(TetDeviceData& data, const Vec3* normals, float maxS
 
 } // namespace
 
-void runAdaptiveRemesh(TetDeviceData& data, const TetrahedralizerParams& params, float maxSize)
+void runAdaptiveSplit(TetDeviceData& data, float maxSize)
 {
     if (data.numTets <= 0 || data.numNodes <= 0 || data.meshVertexSizes.size == 0)
         return;
-    if (!computeNeighbors(data))
-        throw std::runtime_error("Tet mesh has non-manifold faces before adaptive remesh");
 
     DeviceBuffer<Vec3> normals;
-    // Closest-point sampling uses node positions, not smoothed normals. Smoothing here
-    // moved the voxel mesh off-grid before measuring edge lengths.
-    // const float contraction = params.edgeContraction > 0.0f ? params.edgeContraction : kDefaultEdgeContraction;
-    // const Vec3* classifyNormals = params.useNormals ? nullptr : normals.buffer;
-    // const Vec3* applyNormals = params.useNormals ? normals.buffer : nullptr;
-    // computeSurfaceNormals(data, normals);
-    // smoothEdges(data, kAdaptiveSmoothIterations, contraction, classifyNormals, applyNormals);
-    (void)params;
+    computeSurfaceNormals(data, normals);
+    sampleSurfaceNodeSizes(data, normals.buffer, maxSize);
 
-    for (int pass = 0; pass < kAdaptiveRemeshPasses; ++pass)
+    if (subdivideLongEdges(data, 0.0f, data.nodeSizes.buffer) > 0)
     {
-        computeSurfaceNormals(data, normals);
-        sampleSurfaceNodeSizes(data, normals.buffer, maxSize);
-
-        if (subdivideLongEdges(data, 0.0f, data.nodeSizes.buffer) == 0)
-            break;
-
         if (!computeNeighbors(data))
             throw std::runtime_error("Tet mesh has non-manifold faces after adaptive split");
         separateBoundaryFaces(data);

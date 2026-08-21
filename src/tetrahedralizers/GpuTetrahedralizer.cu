@@ -39,6 +39,11 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
         throw std::invalid_argument("Hole close radius must be non-negative");
     if (params.numOptimizationIterations < 0)
         throw std::invalid_argument("Optimization iteration count must be non-negative");
+    if (params.numAdaptiveIterations < 0)
+        throw std::invalid_argument("Adaptive iteration count must be non-negative");
+    if (params.numAdaptiveIterations > 0 &&
+        params.numOptimizationIterations > std::numeric_limits<int>::max() - params.numAdaptiveIterations)
+        throw std::invalid_argument("Optimization plus adaptive iteration count exceeds the supported range");
     if (!(params.volumeContraction >= 0.0f) || !std::isfinite(params.volumeContraction))
         throw std::invalid_argument("Volume contraction must be finite and non-negative");
     if (!(params.edgeContraction >= 0.0f) || !std::isfinite(params.edgeContraction))
@@ -117,7 +122,7 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
         createSplitVoxelNodes(data);
         createFiveTets(data);
 
-        if (params.adaptive)
+        if (params.numAdaptiveIterations > 0)
         {
             SizeFieldParams fieldParams;
             fieldParams.geometricError = params.geometricError * params.voxelSpacing;
@@ -126,7 +131,6 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
             fieldParams.smoothingIterations = params.sizeFieldSmoothingIterations;
             data.meshVertexSizes.set(
                 computeSurfaceSizeField(mesh_vertices, mesh_indices, fieldParams));
-            runAdaptiveRemesh(data, params, fieldParams.maxSize);
         }
 
         cudaCheck(cudaDeviceSynchronize());

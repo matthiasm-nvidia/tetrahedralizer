@@ -450,12 +450,14 @@ MU_TEST(test_max_edge_length_parameter)
     TetrahedralizerParams params;
     params.voxelSpacing = 1.0f;
     params.numOptimizationIterations = 0;
+    params.volumeContraction = 0.0f;
+    params.edgeContraction = 0.0f;
     params.projectToInputMesh = false;
 
     Tetrahedralizer baseMesh;
     baseMesh.create(vertices, indices, params);
 
-    params.adaptive = true;
+    params.numAdaptiveIterations = 1;
     params.maxEdgeLength = 1.1f;
     Tetrahedralizer subdivided;
     subdivided.create(vertices, indices, params);
@@ -717,8 +719,10 @@ MU_TEST(test_dragon_adaptive_stays_manifold)
 
     TetrahedralizerParams params;
     params.voxelSpacing = 0.1f;
-    params.adaptive = true;
+    params.numAdaptiveIterations = 1;
     params.numOptimizationIterations = 0;
+    params.volumeContraction = 0.0f;
+    params.edgeContraction = 0.0f;
     params.projectToInputMesh = false;
 
     Tetrahedralizer tets;
@@ -747,8 +751,10 @@ MU_TEST(test_dragon_adaptive_fine_stays_manifold)
 
     TetrahedralizerParams params;
     params.voxelSpacing = 0.05f;
-    params.adaptive = true;
+    params.numAdaptiveIterations = 1;
     params.numOptimizationIterations = 0;
+    params.volumeContraction = 0.0f;
+    params.edgeContraction = 0.0f;
     params.projectToInputMesh = false;
 
     Tetrahedralizer tets;
@@ -776,9 +782,11 @@ MU_TEST(test_adaptive_size_field_cube_stays_manifold)
 
     TetrahedralizerParams params;
     params.voxelSpacing = 1.0f;
-    params.adaptive = true;
+    params.numAdaptiveIterations = 1;
     params.geometricError = 0.01f;
     params.numOptimizationIterations = 0;
+    params.volumeContraction = 0.0f;
+    params.edgeContraction = 0.0f;
     params.projectToInputMesh = false;
 
     Tetrahedralizer mesh;
@@ -802,13 +810,15 @@ MU_TEST(test_adaptive_size_field_refines_curved)
     TetrahedralizerParams params;
     params.voxelSpacing = 0.25f;
     params.numOptimizationIterations = 0;
+    params.volumeContraction = 0.0f;
+    params.edgeContraction = 0.0f;
     params.projectToInputMesh = false;
 
     Tetrahedralizer baseMesh;
     baseMesh.create(vertices, indices, params);
     mu_check(!baseMesh.empty());
 
-    params.adaptive = true;
+    params.numAdaptiveIterations = 1;
     params.geometricError = 0.01f;
     Tetrahedralizer refined;
     refined.create(vertices, indices, params);

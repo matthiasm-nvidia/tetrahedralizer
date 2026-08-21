@@ -472,13 +472,19 @@ void computeSurfaceNormals(TetDeviceData& data, DeviceBuffer<Vec3>& normals)
 
 void runOptimization(TetDeviceData& data, const TetrahedralizerParams& params)
 {
-    if (params.numOptimizationIterations <= 0)
+    const int totalIterations = params.numOptimizationIterations + params.numAdaptiveIterations;
+    if (totalIterations <= 0)
         return;
 
     const bool project = params.projectToInputMesh;
+    const bool canSplit = params.numAdaptiveIterations > 0 && data.meshVertexSizes.size > 0;
+    const float maxSize = params.maxEdgeLength * params.voxelSpacing;
     DeviceBuffer<Vec3> normals;
-    for (int iteration = 0; iteration < params.numOptimizationIterations; ++iteration)
+    for (int iteration = 0; iteration < totalIterations; ++iteration)
     {
+        if (canSplit && iteration >= params.numOptimizationIterations)
+            runAdaptiveSplit(data, maxSize);
+
         const Vec3* smoothNormals = nullptr;
         if (project && params.volumeContraction > 0.0f && params.volumeContraction < 1.0f)
         {
