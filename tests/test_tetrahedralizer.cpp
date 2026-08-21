@@ -1,5 +1,6 @@
 #include "third_party/minunit.h"
 
+#include "tetrahedralizer/SizeField.h"
 #include "tetrahedralizer/Tetrahedralizer.h"
 #include "tetrahedralizer/TriMesh.h"
 #include "tetrahedralizer/Vec.h"
@@ -754,6 +755,53 @@ MU_TEST(test_dragon_collapse_fine_stays_manifold)
     mu_assert_int_eq(0, stats.oddBoundaryEdges);
 }
 
+MU_TEST(test_size_field_flat_is_coarse)
+{
+    const std::vector<Vec3> vertices = {
+        {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f},
+    };
+    const std::vector<std::uint32_t> indices = {0, 1, 2, 0, 2, 3};
+
+    tetrahedralizer::SizeFieldParams params;
+    params.geometricError = 0.01f;
+    params.minSize = 0.05f;
+    params.maxSize = 1.0f;
+    params.smoothingIterations = 3;
+
+    const std::vector<float> sizes = tetrahedralizer::computeSurfaceSizeField(vertices, indices, params);
+    mu_assert_int_eq(4, static_cast<int>(sizes.size()));
+    for (float size : sizes)
+        mu_check(std::fabs(size - params.maxSize) < 1.0e-5f);
+}
+
+MU_TEST(test_size_field_turning_refines)
+{
+    const std::vector<Vec3> vertices = {
+        {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.5f, 1.0f, 0.0f}, {0.5f, 0.0f, 1.0f},
+    };
+    const std::vector<std::uint32_t> indices = {0, 1, 2, 0, 3, 1};
+
+    tetrahedralizer::SizeFieldParams params;
+    params.geometricError = 0.01f;
+    params.minSize = 0.01f;
+    params.maxSize = 2.0f;
+    params.smoothingIterations = 0;
+
+    const std::vector<float> sizes = tetrahedralizer::computeSurfaceSizeField(vertices, indices, params);
+    mu_assert_int_eq(4, static_cast<int>(sizes.size()));
+    for (float size : sizes)
+    {
+        mu_check(size > params.minSize);
+        mu_check(size < params.maxSize);
+    }
+
+    params.geometricError = 0.04f;
+    const std::vector<float> coarser = tetrahedralizer::computeSurfaceSizeField(vertices, indices, params);
+    mu_assert_int_eq(4, static_cast<int>(coarser.size()));
+    for (std::size_t i = 0; i < sizes.size(); ++i)
+        mu_check(coarser[i] > sizes[i]);
+}
+
 MU_TEST_SUITE(test_suite)
 {
     MU_RUN_TEST(test_cut_templates_tile_reference);
@@ -769,6 +817,8 @@ MU_TEST_SUITE(test_suite)
     MU_RUN_TEST(test_optimization_loop_smoke);
     MU_RUN_TEST(test_node_normals_mark_boundary);
     MU_RUN_TEST(test_smoothing_without_projection_moves_nodes);
+    MU_RUN_TEST(test_size_field_flat_is_coarse);
+    MU_RUN_TEST(test_size_field_turning_refines);
     MU_RUN_TEST(test_dragon_voxel_spacing);
     MU_RUN_TEST(test_dragon_collapse_stays_manifold);
     MU_RUN_TEST(test_dragon_collapse_fine_stays_manifold);

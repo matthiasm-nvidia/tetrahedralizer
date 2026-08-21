@@ -66,6 +66,7 @@ add_executable(tetrahedralizer
     src/viewer/FileDialog.cpp
     src/viewer/GlCore.cpp
     src/TriMesh.cpp
+    src/SizeField.cpp
     src/viewer/TriMeshRenderer.cpp
     src/Tetrahedralizer.cpp
     src/viewer/TetMeshRenderer.cpp
@@ -98,6 +99,7 @@ if(TETRAHEDRALIZER_HAS_CUDA)
         tests/test_tetrahedralizer.cpp
         src/Tetrahedralizer.cpp
         src/TriMesh.cpp
+        src/SizeField.cpp
         ${TETRAHEDRALIZER_CUDA_SOURCES}
     )
     target_include_directories(tetrahedralizer_tests PRIVATE

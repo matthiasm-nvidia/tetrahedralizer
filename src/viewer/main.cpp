@@ -1,6 +1,9 @@
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -15,6 +18,7 @@
 #include "GlCore.h"
 #include "LastPath.h"
 #include "TetMeshRenderer.h"
+#include "tetrahedralizer/SizeField.h"
 #include "tetrahedralizer/Tetrahedralizer.h"
 #include "tetrahedralizer/TriMesh.h"
 #include "TriMeshRenderer.h"
@@ -36,6 +40,14 @@ struct AppState
     tetrahedralizer::Bounds3 mesh_bounds;
     float scene_scale = 1.0f;
     tetrahedralizer::TetrahedralizerParams tet_params;
+    bool show_size_field = false;
+    float geometric_error = 0.01f;
+    int size_smooth_iters = 3;
+    float size_color_min = 0.0f;
+    float size_color_max = 1.0f;
+    float size_field_lo = 0.0f;
+    float size_field_hi = 1.0f;
+    bool size_field_dirty = true;
     // Percentage of the mesh bounds cut away along each axis, 0 disables the clip plane.
     int clip[3] = {0, 0, 0};
     int mouse_x = 0;
@@ -134,6 +146,7 @@ bool loadMesh(GLFWwindow* window, const std::string& path, AppState& state, tetr
 
     tetrahedralizer::writeLastPath(path);
     glfwSetWindowTitle(window, ("Tetrahedralizer - " + path).c_str());
+    state.size_field_dirty = true;
     return true;
 }
 
@@ -155,6 +168,49 @@ void loadLastMesh(GLFWwindow* window, AppState& state, tetrahedralizer::TriMesh&
     if (!tetrahedralizer::readLastPath(path) ||
         !loadMesh(window, path, state, mesh, tri_renderer, tets, tet_renderer))
         promptLoadMesh(window, state, mesh, tri_renderer, tets, tet_renderer);
+}
+
+void applySizeField(AppState& state, const tetrahedralizer::TriMesh& mesh,
+                    tetrahedralizer::TriMeshRenderer& tri_renderer)
+{
+    if (!state.show_size_field || mesh.empty())
+    {
+        tri_renderer.uploadSizeField({});
+        state.size_field_dirty = false;
+        return;
+    }
+
+    tetrahedralizer::SizeFieldParams field_params;
+    field_params.geometricError = state.geometric_error;
+    field_params.minSize = state.tet_params.voxelSpacing;
+    field_params.maxSize =
+        state.tet_params.maxEdgeLength > 0.0f ? state.tet_params.maxEdgeLength : state.scene_scale;
+    field_params.smoothingIterations = state.size_smooth_iters;
+
+    const std::vector<float> sizes =
+        tetrahedralizer::computeSurfaceSizeField(mesh.positions, mesh.triangle_indices, field_params);
+    tri_renderer.uploadSizeField(sizes);
+
+    float minSize = std::numeric_limits<float>::max();
+    float maxSize = 0.0f;
+    for (float size : sizes)
+    {
+        if (!(size > 0.0f) || !std::isfinite(size))
+            continue;
+        minSize = std::min(minSize, size);
+        maxSize = std::max(maxSize, size);
+    }
+    if (!(minSize < maxSize))
+    {
+        minSize = field_params.minSize > 0.0f ? field_params.minSize : 1.0e-3f;
+        maxSize = field_params.maxSize > minSize ? field_params.maxSize : minSize * 2.0f;
+    }
+    state.size_field_lo = minSize;
+    state.size_field_hi = maxSize;
+    state.size_color_min = minSize;
+    state.size_color_max = maxSize;
+    tri_renderer.setSizeFieldRange(state.size_color_min, state.size_color_max);
+    state.size_field_dirty = false;
 }
 
 void onKey(GLFWwindow* window, int key, int scancode, int action, int mods)
@@ -324,7 +380,11 @@ int main()
         const tetrahedralizer::Vec3 clip = clipLimits(state);
         applyClipPlanes(clip);
         if (show_mesh)
+        {
+            if (state.size_field_dirty)
+                applySizeField(state, mesh, tri_renderer);
             tri_renderer.render(wireframe);
+        }
         disableClipPlanes();
 
         if (show_tets)
@@ -372,16 +432,33 @@ int main()
             viewer::imgui_widgets::section_heading("Mesh");
             viewer::imgui_widgets::checkbox("Show mesh", &show_mesh);
             viewer::imgui_widgets::checkbox("Wireframe", &wireframe);
+            if (viewer::imgui_widgets::checkbox("Show size field", &state.show_size_field))
+                state.size_field_dirty = true;
+            if (state.show_size_field)
+            {
+                if (viewer::imgui_widgets::slider_float("Geometric error", &state.geometric_error, 0.0001f, 0.1f,
+                                                        "%.4f", 3.0f))
+                    state.size_field_dirty = true;
+                if (viewer::imgui_widgets::slider_int("Size smooth iters", &state.size_smooth_iters, 0, 10))
+                    state.size_field_dirty = true;
+                if (viewer::imgui_widgets::slider_float("Color min", &state.size_color_min, state.size_field_lo,
+                                                        state.size_field_hi, "%.4f", 3.0f) ||
+                    viewer::imgui_widgets::slider_float("Color max", &state.size_color_max, state.size_field_lo,
+                                                        state.size_field_hi, "%.4f", 3.0f))
+                    tri_renderer.setSizeFieldRange(state.size_color_min, state.size_color_max);
+            }
 
             viewer::imgui_widgets::section_separator();
             viewer::imgui_widgets::section_heading("Tets");
-            viewer::imgui_widgets::slider_float("Voxel size", &state.tet_params.voxelSpacing, 0.01f, 0.1f);
+            if (viewer::imgui_widgets::slider_float("Voxel size", &state.tet_params.voxelSpacing, 0.01f, 0.1f))
+                state.size_field_dirty = true;
             viewer::imgui_widgets::slider_int("Hole close", &state.tet_params.holeCloseRadius, 0, 5);
             viewer::imgui_widgets::slider_int("Opt iters", &state.tet_params.numOptimizationIterations, 0, 50);
             viewer::imgui_widgets::slider_float("Volume contraction", &state.tet_params.volumeContraction, 0.0f, 1.0f);
             viewer::imgui_widgets::slider_float("Edge contraction", &state.tet_params.edgeContraction, 0.0f, 1.0f);
             viewer::imgui_widgets::checkbox("Edge use normals", &state.tet_params.useNormals);
-            viewer::imgui_widgets::slider_float("Max edge length", &state.tet_params.maxEdgeLength, 0.0f, 0.2f);
+            if (viewer::imgui_widgets::slider_float("Max edge length", &state.tet_params.maxEdgeLength, 0.0f, 0.2f))
+                state.size_field_dirty = true;
             viewer::imgui_widgets::slider_float("Min edge length", &state.tet_params.minEdgeLength, 0.0f, 0.2f);
             viewer::imgui_widgets::checkbox("Project to mesh", &state.tet_params.projectToInputMesh);
             if (state.tet_params.projectToInputMesh)
