@@ -5,6 +5,7 @@
 #include "tetrahedralizer/TriMesh.h"
 #include "tetrahedralizer/Vec.h"
 #include "utils/CpuBVH.h"
+#include "utils/Geometry.h"
 #include "tetrahedralizers/TetCutTemplates.h"
 
 #include <algorithm>
@@ -363,10 +364,9 @@ MU_TEST(test_split_voxels_keeps_interior_connected)
     Tetrahedralizer mesh;
     mesh.create(vertices, indices, params);
 
-    const int voxelCount = mesh.numTets() / 5;
-    // Interior voxels share nodes; a failed merge leaves 8 corners per voxel.
-    mu_check(static_cast<int>(mesh.nodes.size()) < voxelCount * 8);
-    mu_check(static_cast<int>(mesh.nodes.size()) < voxelCount * 4);
+    // Interior voxels share nodes; a failed merge is close to 8 corners per 5 tets.
+    mu_check(mesh.numTets() > 0);
+    mu_check(static_cast<int>(mesh.nodes.size()) * 5 < mesh.numTets() * 8);
 
     const MeshStats stats = analyse(mesh);
     mu_assert_int_eq(0, stats.badTets);
@@ -392,6 +392,37 @@ MU_TEST(test_split_voxels_disconnects_nearby_sheets)
     mu_check(!mesh.empty());
     // Origin triangle plus two face-adjacent sheets that must not glue together.
     mu_check(countTetComponents(mesh) >= 3);
+
+    const MeshStats stats = analyse(mesh);
+    mu_assert_int_eq(0, stats.badTets);
+    mu_assert_int_eq(0, stats.overusedFaces);
+    mu_assert_int_eq(0, stats.neighborMismatches);
+}
+
+MU_TEST(test_empty_exterior_tets_removed)
+{
+    const Vec3 a(0.3f, 0.3f, 0.3f);
+    const Vec3 b(0.8f, 0.3f, 0.5f);
+    const Vec3 c(0.3f, 0.8f, 0.6f);
+    const std::vector<Vec3> vertices = {a, b, c};
+    const std::vector<std::uint32_t> indices = {0, 1, 2};
+
+    TetrahedralizerParams params;
+    params.voxelSpacing = 1.0f;
+    params.numOptimizationIterations = 0;
+    params.projectToInputMesh = false;
+
+    Tetrahedralizer mesh;
+    mesh.create(vertices, indices, params);
+    mu_check(!mesh.empty());
+    mu_check(mesh.numTets() > 0);
+
+    for (int ti = 0; ti < mesh.numTets(); ++ti)
+    {
+        mu_check(tetrahedralizer::header_triangleTetrahedronIntersection(
+            a, b, c, mesh.nodes[mesh.tet_indices[4 * ti + 0]], mesh.nodes[mesh.tet_indices[4 * ti + 1]],
+            mesh.nodes[mesh.tet_indices[4 * ti + 2]], mesh.nodes[mesh.tet_indices[4 * ti + 3]]));
+    }
 
     const MeshStats stats = analyse(mesh);
     mu_assert_int_eq(0, stats.badTets);
@@ -907,12 +938,29 @@ MU_TEST(test_cpu_bvh_raycast_hits_triangle)
     mu_check(!bvh.raycast(missRay, vertices.data(), indices.data(), bary, triNr, t, normal, inside));
 }
 
+MU_TEST(test_triangle_tetrahedron_intersection)
+{
+    const Vec3 t0(0.0f, 0.0f, 0.0f);
+    const Vec3 t1(1.0f, 0.0f, 0.0f);
+    const Vec3 t2(0.0f, 1.0f, 0.0f);
+    const Vec3 t3(0.0f, 0.0f, 1.0f);
+
+    mu_check(tetrahedralizer::header_triangleTetrahedronIntersection(
+        Vec3(0.1f, 0.1f, 0.1f), Vec3(2.0f, 0.0f, 0.0f), Vec3(0.0f, 2.0f, 0.0f), t0, t1, t2, t3));
+    mu_check(!tetrahedralizer::header_triangleTetrahedronIntersection(
+        Vec3(2.0f, 0.0f, 0.0f), Vec3(3.0f, 0.0f, 0.0f), Vec3(2.0f, 1.0f, 0.0f), t0, t1, t2, t3));
+    mu_check(tetrahedralizer::header_triangleTetrahedronIntersection(
+        Vec3(-1.0f, -1.0f, 0.25f), Vec3(2.0f, -1.0f, 0.25f), Vec3(-1.0f, 2.0f, 0.25f), t0, t1, t2, t3));
+    mu_check(tetrahedralizer::header_triangleTetrahedronIntersection(t0, t1, t2, t0, t1, t2, t3));
+}
+
 MU_TEST_SUITE(test_suite)
 {
     MU_RUN_TEST(test_cut_templates_tile_reference);
     MU_RUN_TEST(test_voxelized_cube_base_mesh);
     MU_RUN_TEST(test_split_voxels_keeps_interior_connected);
     MU_RUN_TEST(test_split_voxels_disconnects_nearby_sheets);
+    MU_RUN_TEST(test_empty_exterior_tets_removed);
     MU_RUN_TEST(test_subdivision_preserves_manifold_volume);
     MU_RUN_TEST(test_adaptive_off_ignores_edge_scales);
     MU_RUN_TEST(test_max_edge_length_parameter);
@@ -927,6 +975,7 @@ MU_TEST_SUITE(test_suite)
     MU_RUN_TEST(test_size_field_flat_is_coarse);
     MU_RUN_TEST(test_size_field_turning_refines);
     MU_RUN_TEST(test_cpu_bvh_raycast_hits_triangle);
+    MU_RUN_TEST(test_triangle_tetrahedron_intersection);
     MU_RUN_TEST(test_dragon_voxel_spacing);
     MU_RUN_TEST(test_dragon_adaptive_stays_manifold);
     MU_RUN_TEST(test_dragon_adaptive_fine_stays_manifold);

@@ -63,6 +63,9 @@ void runAdaptiveSplit(TetDeviceData& data, float maxSize)
     {
         if (!computeNeighbors(data))
             throw std::runtime_error("Tet mesh has non-manifold faces after adaptive split");
+        removeEmptyExteriorTets(data);
+        if (!computeNeighbors(data))
+            throw std::runtime_error("Tet mesh has non-manifold faces after adaptive empty-tet removal");
         separateBoundaryFaces(data);
     }
 

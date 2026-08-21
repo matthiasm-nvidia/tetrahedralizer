@@ -95,6 +95,47 @@ CUDA_CALLABLE inline bool header_boxTriangleIntersection(
     return true;
 }
 
+// SAT: true if triangle and tetrahedron projections do not overlap.
+CUDA_CALLABLE inline bool header_separatedOnAxis(const Vec3& axis, const Vec3 tri[3], const Vec3 tet[4])
+{
+    if (axis.x == 0.0f && axis.y == 0.0f && axis.z == 0.0f)
+        return false;
+
+    const float a0 = axis.dot(tri[0]);
+    const float a1 = axis.dot(tri[1]);
+    const float a2 = axis.dot(tri[2]);
+    const float b0 = axis.dot(tet[0]);
+    const float b1 = axis.dot(tet[1]);
+    const float b2 = axis.dot(tet[2]);
+    const float b3 = axis.dot(tet[3]);
+    return Max(a0, a1, a2) < Min(Min(b0, b1), Min(b2, b3)) || Max(Max(b0, b1), Max(b2, b3)) < Min(a0, a1, a2);
+}
+
+CUDA_CALLABLE inline bool header_triangleTetrahedronIntersection(
+    const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& t0, const Vec3& t1, const Vec3& t2, const Vec3& t3)
+{
+    const Vec3 tri[3] = {p0, p1, p2};
+    const Vec3 tet[4] = {t0, t1, t2, t3};
+    const Vec3 te[3] = {p1 - p0, p2 - p1, p0 - p2};
+    const Vec3 se[6] = {t1 - t0, t2 - t0, t3 - t0, t2 - t1, t3 - t1, t3 - t2};
+
+    if (header_separatedOnAxis(te[0].cross(te[1]), tri, tet))
+        return false;
+    if (header_separatedOnAxis((t1 - t0).cross(t2 - t0), tri, tet))
+        return false;
+    if (header_separatedOnAxis((t1 - t0).cross(t3 - t0), tri, tet))
+        return false;
+    if (header_separatedOnAxis((t2 - t0).cross(t3 - t0), tri, tet))
+        return false;
+    if (header_separatedOnAxis((t2 - t1).cross(t3 - t1), tri, tet))
+        return false;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 6; ++j)
+            if (header_separatedOnAxis(te[i].cross(se[j]), tri, tet))
+                return false;
+    return true;
+}
+
 
 //-----------------------------------------------------------------------------
 CUDA_CALLABLE inline bool header_rayBoundsIntersection(Ray ray,

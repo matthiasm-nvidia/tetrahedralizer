@@ -35,19 +35,23 @@ Host-only. Builds the 64×diagBits cut tables and checks every reachable `(mask,
 
 Voxelize a side-3 cube at spacing 1:
 
-- Tet count is a positive multiple of 5
+- Tet count is positive
 - All tet volumes \(> 0\)
 - Face conformity (each face used once or twice)
 - `tet_neighbors` mutual consistency
-- Total tet volume ≈ number of solid voxels (unit spacing), and at least the input cube volume
+- Total tet volume at least the input cube volume (empty exterior tets of surface voxels are removed)
 
 ### `test_split_voxels_keeps_interior_connected`
 
-Voxelize a solid cube. Interior voxels must still share nodes (node count well below `8 × voxelCount`); volume and manifold checks remain valid.
+Voxelize a solid cube. Interior voxels must still share nodes (node count well below 8 per 5 tets); volume and manifold checks remain valid.
 
 ### `test_split_voxels_disconnects_nearby_sheets`
 
 Voxelize two nearby parallel triangles in face-adjacent cells. Additional node IDs keep the sheets topologically disconnected; tet volumes, face usage, and neighbors remain valid.
+
+### `test_empty_exterior_tets_removed`
+
+Voxelize a single open triangle (no enclosed volume). Empty exterior tets are deleted, so every remaining tet intersects the input triangle.
 
 ### `test_subdivision_preserves_manifold_volume`
 
@@ -123,6 +127,10 @@ Host-only. A bent pair of triangles gets a smaller `h_max` at the crease than a 
 ### `test_cpu_bvh_raycast_hits_triangle`
 
 Host-only. CPU BVH raycast hits a known triangle at the expected `t` and misses a ray that does not intersect.
+
+### `test_triangle_tetrahedron_intersection`
+
+Host-only. SAT test hits a tet when a triangle vertex is inside, when a plane stabs through, and when a tet face is coplanar; misses a disjoint triangle.
 
 ## Adding tests
 

@@ -38,6 +38,7 @@ if(TETRAHEDRALIZER_ENABLE_CUDA)
             src/tetrahedralizers/VoxelSplit.cu
             src/tetrahedralizers/TetCut.cu
             src/tetrahedralizers/TetCollapse.cu
+            src/tetrahedralizers/TetRemove.cu
             src/tetrahedralizers/Optimize.cu
             src/tetrahedralizers/AdaptiveRemesh.cu
         )

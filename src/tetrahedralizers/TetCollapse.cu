@@ -366,38 +366,6 @@ __global__ void unmarkDuplicateTets(int numTets, const TetKey* keys, int* tetMar
         tetMarks[key0.tetIndex] = 0;
 }
 
-__global__ void markUsedNodes(TetDeviceData data)
-{
-    CUDA_THREAD_GUARD(tetIndex, data.numTets)
-    if (data.firstNewTet[tetIndex] == 0)
-        return;
-    atomicOr(data.firstSteiner.buffer + data.tetIndices[4 * tetIndex + 0], 1);
-    atomicOr(data.firstSteiner.buffer + data.tetIndices[4 * tetIndex + 1], 1);
-    atomicOr(data.firstSteiner.buffer + data.tetIndices[4 * tetIndex + 2], 1);
-    atomicOr(data.firstSteiner.buffer + data.tetIndices[4 * tetIndex + 3], 1);
-}
-
-__global__ void compressNodes(TetDeviceData data, Vec3* compressedNodes)
-{
-    CUDA_THREAD_GUARD(nodeIndex, data.numNodes)
-    const int mappedId = data.firstSteiner[nodeIndex];
-    if (mappedId == data.firstSteiner[nodeIndex + 1])
-        return;
-    compressedNodes[mappedId] = data.nodes[nodeIndex];
-}
-
-__global__ void compressTetIds(TetDeviceData data, int* compressedTetIds)
-{
-    CUDA_THREAD_GUARD(tetIndex, data.numTets)
-    const int mappedId = data.firstNewTet[tetIndex];
-    if (mappedId == data.firstNewTet[tetIndex + 1])
-        return;
-    compressedTetIds[4 * mappedId + 0] = data.firstSteiner[data.tetIndices[4 * tetIndex + 0]];
-    compressedTetIds[4 * mappedId + 1] = data.firstSteiner[data.tetIndices[4 * tetIndex + 1]];
-    compressedTetIds[4 * mappedId + 2] = data.firstSteiner[data.tetIndices[4 * tetIndex + 2]];
-    compressedTetIds[4 * mappedId + 3] = data.firstSteiner[data.tetIndices[4 * tetIndex + 3]];
-}
-
 void unmarkTetsByRemappedFaces(TetDeviceData& data, bool onlySameApex)
 {
     if (data.numTets > std::numeric_limits<int>::max() / 4)
@@ -425,36 +393,6 @@ void restrictCollapses(TetDeviceData& data)
         if (readDeviceInt(data.anyChanged, 0) == 0)
             break;
     }
-}
-
-void compactTets(TetDeviceData& data)
-{
-    data.firstNewTet.resize(static_cast<std::size_t>(data.numTets + 1), false);
-    data.firstSteiner.resize(static_cast<std::size_t>(data.numNodes + 1), false);
-    data.firstSteiner.setZero();
-    CUDA_LAUNCH(markUsedNodes, data.numTets, data);
-
-    thrust::device_ptr<int> tetMap(data.firstNewTet.buffer);
-    thrust::device_ptr<int> nodeMap(data.firstSteiner.buffer);
-    thrust::exclusive_scan(tetMap, tetMap + data.numTets + 1, tetMap);
-    thrust::exclusive_scan(nodeMap, nodeMap + data.numNodes + 1, nodeMap);
-
-    const int numNewTets = readDeviceInt(data.firstNewTet, data.numTets);
-    const int numNewNodes = readDeviceInt(data.firstSteiner, data.numNodes);
-
-    DeviceBuffer<Vec3> compressedNodes;
-    DeviceBuffer<int> compressedTetIds;
-    compressedNodes.resize(static_cast<std::size_t>(numNewNodes), false);
-    compressedTetIds.resize(static_cast<std::size_t>(numNewTets) * 4, false);
-    CUDA_LAUNCH(compressNodes, data.numNodes, data, compressedNodes.buffer);
-    CUDA_LAUNCH(compressTetIds, data.numTets, data, compressedTetIds.buffer);
-
-    data.nodes.swap(compressedNodes);
-    data.tetIndices.swap(compressedTetIds);
-    data.numNodes = numNewNodes;
-    data.numTets = numNewTets;
-    compressedNodes.free();
-    compressedTetIds.free();
 }
 
 } // namespace
@@ -515,7 +453,7 @@ bool collapseShortEdges(TetDeviceData& data, float minEdgeLength)
     CUDA_LAUNCH(unmarkDuplicateTets, data.numTets, data.numTets, keys.buffer, data.firstNewTet.buffer);
     keys.free();
 
-    compactTets(data);
+    compactKeptTets(data);
     return true;
 }
 

@@ -219,6 +219,7 @@ __global__ void createTets(TetDeviceData data)
         const int outputIndex = (voxelIndex * 5 + tet) * 4;
         for (int corner = 0; corner < 4; ++corner)
             data.tetIndices[outputIndex + corner] = ids[corner];
+        data.tetInterior[voxelIndex * 5 + tet] = getCell(data.geomCells.buffer, data, x, y, z) ? 0 : 1;
     }
 }
 
@@ -292,6 +293,7 @@ void createFiveTets(TetDeviceData& data)
         throw std::runtime_error("Tet count exceeds the supported range");
     data.numTets = data.numVoxels * 5;
     data.tetIndices.resize(static_cast<std::size_t>(data.numTets) * 4, false);
+    data.tetInterior.resize(static_cast<std::size_t>(data.numTets), false);
     CUDA_LAUNCH(createTets, data.numVoxels, data);
 }
 

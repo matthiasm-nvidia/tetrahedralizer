@@ -9,8 +9,9 @@ GPU tetrahedralization for unstructured, non-manifold polygonal meshes. The mesh
 3. **Fill the interior**: stamp surface voxels into a dense bit grid, flood exterior air from the grid border, then keep every cell the flood did not reach (surface + enclosed solid).
 4. **Split voxels**: only merge surface-voxel corners across faces crossed by input geometry; interior voxels remain connected.
 5. **Tetrahedralize voxels**: each solid cell becomes five tets via an alternating five-tet cube decomposition so neighboring face diagonals agree.
-6. **Prepare boundary tets**: separate multiple boundary faces into different tets.
-7. **Optimize** (optional): `numOptimizationIterations + numAdaptiveIterations` steps. Each does tet smoothing, then edge smoothing, then project (if enabled). Size-field split runs only on the adaptive steps, after the opt-only phase.
+6. **Remove empty exterior tets**: drop tets that contain no input geometry and are not on the solid side of the surface (see below). Unused nodes are compacted.
+7. **Prepare boundary tets**: separate multiple boundary faces into different tets.
+8. **Optimize** (optional): `numOptimizationIterations + numAdaptiveIterations` steps. Each does tet smoothing, then edge smoothing, then project (if enabled). Size-field split runs only on the adaptive steps, after the opt-only phase.
 
 ## Parameters
 
@@ -40,6 +41,7 @@ See `TetrahedralizerParams` in `include/tetrahedralizer/Tetrahedralizer.h`. The 
 - Optional hole closing and exterior flood-fill interior
 - Face-aware voxel splitting before tet creation
 - Five-tet voxel decomposition → node positions and tet indices
+- Empty exterior tet removal after five-tet creation (and after adaptive split): keep flood-fill interior, geometry-hitting tets, and empty tets reachable from interior without crossing geometry
 - Adaptive split (`numAdaptiveIterations`): after the opt-only phase, each remaining step closest-point samples then splits edges longer than local `h_max` (one pass per step)
 - Optional projection of boundary nodes onto the input mesh (outward-normal raycast or closest point)
 - Optional optimization loop: tet smoothing, edge smoothing, then project
@@ -109,6 +111,18 @@ Then compact:
 
 `createFiveTets` reads those eight ids. Unconnected faces never share nodes, so the tet mesh stays disconnected there; connected faces share all four corners and the alternating five-tet pattern still matches diagonals.
 
+### Empty exterior tet removal
+
+Runs after five-tet creation (and again after adaptive split) in `removeEmptyExteriorTets` (`TetRemove.cu`). Voxel split cannot separate two sheets that share a cell; empty tets in the gap often can be dropped.
+
+Each tet from a flood-fill (non-`geomCells`) voxel is marked `tetInterior`. Children inherit that flag on split; `compactKeptTets` keeps it on collapse.
+
+1. **Geometry**: BVH cull with the tet AABB, then `header_triangleTetrahedronIntersection` on leaves.
+2. **Keep flood**: seed from `tetInterior`. Spread through face neighbors that do **not** contain geometry (geometry tets are walls). This keeps empty tets on the solid side of a surface voxel, which would otherwise open a crack down to the flood-fill interior.
+3. **Keep geometry tets** as well, then compact dropped tets and isolated nodes (exclusive scan, same pattern as navmesh `removeUnusedGeometry`). Rebuild neighbors afterward.
+
+A tet stabbed by two sheets is kept. This pass does not run during smooth/project-only steps.
+
 ### Subdivision pipeline
 
 Host-baked 64×diagBits child templates provide conforming subdivisions for every combination of subdivided tet edges. Used by `Tetrahedralizer::subdivide(maxEdgeLength)` (uniform threshold) and by adaptive remesh (per-node `h_max`; an edge splits when longer than `min(h_i, h_j)`):
@@ -131,7 +145,7 @@ Before projection, boundary topology is refined until no tet edge has both oppos
 
 Projection and smoothing never write node positions directly. Both fill a per-node offset buffer, and `applyNodeMovesSafely` then halves the step of every node belonging to a tet that the move would shrink below `kMinMoveVolumeFraction` of its current volume, repeating until no tet is affected (a step below `kMinMoveScale` becomes zero, which restores the original corners, so the loop always terminates). Without this backoff interior midpoints added by boundary refinement can cross a boundary face and produce spikes.
 
-**Optimization** (`numOptimizationIterations + numAdaptiveIterations` times): tet smoothing if `volumeContraction > 0`, then edge smoothing if `edgeContraction > 0`, then project if enabled. On steps after the first `numOptimizationIterations`, a size-field split runs first (`runAdaptiveSplit`: sample, one split pass, rebuild neighbors, `separateBoundaryFaces`). Tet smoothing shape-matches to a regular tet. With projection on, surface nodes keep only the tangential part of the tet-smooth correction (`corr -= n * dot(corr, n)`). Edge smoothing with `useNormals` on contracts every edge then strips the normal component on surface nodes; with it off, mixed interior/surface edges move only the interior node. Both counts `0` skips the loop; split and projection do not run.
+**Optimization** (`numOptimizationIterations + numAdaptiveIterations` times): tet smoothing if `volumeContraction > 0`, then edge smoothing if `edgeContraction > 0`, then project if enabled. On steps after the first `numOptimizationIterations`, a size-field split runs first (`runAdaptiveSplit`: sample, one split pass, rebuild neighbors, empty-tet removal, `separateBoundaryFaces`). Tet smoothing shape-matches to a regular tet. With projection on, surface nodes keep only the tangential part of the tet-smooth correction (`corr -= n * dot(corr, n)`). Edge smoothing with `useNormals` on contracts every edge then strips the normal component on surface nodes; with it off, mixed interior/surface edges move only the interior node. Both counts `0` skips the loop; split and projection do not run.
 
 ### Adaptive mesh
 
@@ -209,6 +223,7 @@ Interior tet edges keep the large `h_max` cap; curvature does not apply there.
 | `src/tetrahedralizers/GpuTetrahedralizer.cu` | Pipeline orchestrator (`create` / `subdivide`) |
 | `src/tetrahedralizers/Voxelize.cu` | Surface voxelization, hole close, flood fill |
 | `src/tetrahedralizers/VoxelSplit.cu` | Face-aware corner merge and five-tet cubes |
+| `src/tetrahedralizers/TetRemove.cu` | Empty exterior tet removal and kept-tet compact |
 | `src/tetrahedralizers/TetCut.cu` | Neighbors, long-edge subdivision, boundary face splits |
 | `src/tetrahedralizers/Optimize.cu` | Optimize loop: optional adaptive split, shape-matching smooth, edge smooth, project |
 | `src/tetrahedralizers/TetCutTemplates.h` | Host-baked tet edge-subdivision tables |

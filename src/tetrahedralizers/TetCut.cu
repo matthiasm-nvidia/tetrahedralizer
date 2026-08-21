@@ -307,6 +307,8 @@ __global__ void splitTets(TetDeviceData data, bool countOnly)
             const int localId = tables.children[mask][diagBits][child * 4 + corner];
             data.tetIndices[4 * outTet + corner] = local[localId];
         }
+        if (data.tetInterior.size > static_cast<std::size_t>(tetIndex))
+            data.tetInterior[outTet] = data.tetInterior[tetIndex];
     }
 }
 
@@ -356,6 +358,8 @@ void applyCutTemplates(TetDeviceData& data)
         if (numExtraTets > std::numeric_limits<int>::max() - data.numTets)
             throw std::runtime_error("Cut tet count exceeds the supported range");
         data.tetIndices.resize(static_cast<std::size_t>(data.numTets + numExtraTets) * 4, true);
+        if (data.tetInterior.size == static_cast<std::size_t>(data.numTets))
+            data.tetInterior.resize(static_cast<std::size_t>(data.numTets + numExtraTets), true);
     }
     CUDA_LAUNCH(splitTets, data.numTets, data, false);
     data.numTets += numExtraTets;

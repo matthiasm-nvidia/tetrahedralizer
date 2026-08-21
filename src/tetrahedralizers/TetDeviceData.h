@@ -95,6 +95,7 @@ struct TetDeviceData
     DeviceBuffer<Vec3> nodes;
     DeviceBuffer<int> tetIndices;
     DeviceBuffer<int> tetNeighbors; // 4 per tet: adjacent tet index or -1
+    DeviceBuffer<int> tetInterior; // 1 if the tet came from a flood-fill voxel
     DeviceBuffer<std::uint64_t> edges;
 
     // Subdivision / boundary cuts
@@ -139,6 +140,7 @@ struct TetDeviceData
         nodes.free();
         tetIndices.free();
         tetNeighbors.free();
+        tetInterior.free();
         edges.free();
         firstCutVertex.free();
         edgeCutVertices.free();
@@ -222,6 +224,8 @@ void fillInterior(TetDeviceData& data, int holeCloseRadius);
 void buildInputMeshBvh(TetDeviceData& data);
 void createSplitVoxelNodes(TetDeviceData& data);
 void createFiveTets(TetDeviceData& data);
+void compactKeptTets(TetDeviceData& data);
+void removeEmptyExteriorTets(TetDeviceData& data);
 int subdivideLongEdges(TetDeviceData& data, float maxEdgeLength, const float* nodeSizes = nullptr);
 bool collapseShortEdges(TetDeviceData& data, float minEdgeLength);
 bool computeNeighbors(TetDeviceData& data);
