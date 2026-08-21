@@ -1,5 +1,6 @@
 #include "TetDeviceData.h"
 
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <thrust/device_ptr.h>
@@ -134,14 +135,20 @@ __global__ void fillNeighbors(int numFaces, const Face* faces, int* neighbors, i
         atomicAdd(nonManifold, 1);
 }
 
-__global__ void markLongEdges(TetDeviceData data, float maxEdgeLength)
+__global__ void markLongEdges(TetDeviceData data, float maxEdgeLength, const float* nodeSizes)
 {
     CUDA_THREAD_GUARD(edgeIndex, data.numEdges)
     const std::uint64_t edge = data.edges[edgeIndex];
     const int id0 = static_cast<int>(edge >> 32);
     const int id1 = static_cast<int>(edge & 0xffffffffu);
     const Vec3 delta = data.nodes[id1] - data.nodes[id0];
-    data.firstCutVertex[edgeIndex] = delta.magnitudeSquared() > maxEdgeLength * maxEdgeLength ? 1 : 0;
+    float limit = maxEdgeLength;
+    if (nodeSizes)
+    {
+        const float local = fminf(nodeSizes[id0], nodeSizes[id1]);
+        limit = local > 0.0f && isfinite(local) ? local : 0.0f;
+    }
+    data.firstCutVertex[edgeIndex] = limit > 0.0f && delta.magnitudeSquared() > limit * limit ? 1 : 0;
 }
 
 __global__ void createMarkedSubdivisionVertices(TetDeviceData data, int originalNodeCount)
@@ -410,14 +417,17 @@ bool computeNeighbors(TetDeviceData& data)
     return manifold;
 }
 
-void subdivideLongEdges(TetDeviceData& data, float maxEdgeLength)
+int subdivideLongEdges(TetDeviceData& data, float maxEdgeLength, const float* nodeSizes)
 {
+    if (!nodeSizes && !(maxEdgeLength > 0.0f))
+        return 0;
+
     buildUniqueTetEdges(data);
 
     data.firstCutVertex.resize(static_cast<std::size_t>(data.numEdges + 1), false);
     data.firstCutVertex.setZero();
-    CUDA_LAUNCH(markLongEdges, data.numEdges, data, maxEdgeLength);
-    createMarkedEdgeVertices(data);
+    CUDA_LAUNCH(markLongEdges, data.numEdges, data, maxEdgeLength, nodeSizes);
+    return createMarkedEdgeVertices(data);
 }
 
 void separateBoundaryFaces(TetDeviceData& data)

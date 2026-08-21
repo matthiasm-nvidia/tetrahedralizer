@@ -39,6 +39,7 @@ if(TETRAHEDRALIZER_ENABLE_CUDA)
             src/tetrahedralizers/TetCut.cu
             src/tetrahedralizers/TetCollapse.cu
             src/tetrahedralizers/Optimize.cu
+            src/tetrahedralizers/AdaptiveRemesh.cu
         )
         set(TETRAHEDRALIZER_CUDA_LIBS CUDA::cudart)
         set(TETRAHEDRALIZER_HAS_CUDA ON)

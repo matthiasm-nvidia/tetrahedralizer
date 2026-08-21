@@ -71,6 +71,8 @@ struct TetDeviceData
     // Input mesh
     DeviceBuffer<Vec3> meshVertices;
     DeviceBuffer<std::uint32_t> meshIndices;
+    DeviceBuffer<float> meshVertexSizes;
+    DeviceBuffer<float> nodeSizes;
     DeviceBuffer<Vec4> triangleBoundsLowers;
     DeviceBuffer<Vec4> triangleBoundsUppers;
     GpuBVH triangleBvh;
@@ -119,6 +121,8 @@ struct TetDeviceData
     {
         meshVertices.free();
         meshIndices.free();
+        meshVertexSizes.free();
+        nodeSizes.free();
         triangleBoundsLowers.free();
         triangleBoundsUppers.free();
         triangleBvh.free();
@@ -218,12 +222,15 @@ void fillInterior(TetDeviceData& data, int holeCloseRadius);
 void buildInputMeshBvh(TetDeviceData& data);
 void createSplitVoxelNodes(TetDeviceData& data);
 void createFiveTets(TetDeviceData& data);
-void subdivideLongEdges(TetDeviceData& data, float maxEdgeLength);
-void collapseShortEdges(TetDeviceData& data, float minEdgeLength);
+int subdivideLongEdges(TetDeviceData& data, float maxEdgeLength, const float* nodeSizes = nullptr);
+bool collapseShortEdges(TetDeviceData& data, float minEdgeLength);
 bool computeNeighbors(TetDeviceData& data);
 void computeSurfaceNormals(TetDeviceData& data, DeviceBuffer<Vec3>& normals);
+void smoothEdges(TetDeviceData& data, int iterations, float contraction, const Vec3* classifyNormals = nullptr,
+                 const Vec3* applyNormals = nullptr);
 void separateBoundaryFaces(TetDeviceData& data);
 void runOptimization(TetDeviceData& data, const TetrahedralizerParams& params);
+void runAdaptiveRemesh(TetDeviceData& data, const TetrahedralizerParams& params, float maxSize);
 void uploadMeshFromHost(TetDeviceData& data, const Tetrahedralizer& mesh);
 void downloadMeshToHost(TetDeviceData& data, Tetrahedralizer& mesh);
 

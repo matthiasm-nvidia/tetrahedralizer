@@ -44,8 +44,6 @@ struct AppState
     tetrahedralizer::CpuBVH mesh_bvh;
     const tetrahedralizer::TriMesh* mesh = nullptr;
     bool show_size_field = false;
-    float geometric_error = 0.01f;
-    int size_smooth_iters = 3;
     float size_color_min = 0.0f;
     float size_color_max = 1.0f;
     float size_field_lo = 0.0f;
@@ -245,11 +243,10 @@ void applySizeField(AppState& state, const tetrahedralizer::TriMesh& mesh,
     }
 
     tetrahedralizer::SizeFieldParams field_params;
-    field_params.geometricError = state.geometric_error;
-    field_params.minSize = state.tet_params.voxelSpacing;
-    field_params.maxSize =
-        state.tet_params.maxEdgeLength > 0.0f ? state.tet_params.maxEdgeLength : state.scene_scale;
-    field_params.smoothingIterations = state.size_smooth_iters;
+    field_params.geometricError = state.tet_params.geometricError * state.tet_params.voxelSpacing;
+    field_params.minSize = state.tet_params.minEdgeLength * state.tet_params.voxelSpacing;
+    field_params.maxSize = state.tet_params.maxEdgeLength * state.tet_params.voxelSpacing;
+    field_params.smoothingIterations = state.tet_params.sizeFieldSmoothingIterations;
 
     const std::vector<float> sizes =
         tetrahedralizer::computeSurfaceSizeField(mesh.positions, mesh.triangle_indices, field_params);
@@ -507,11 +504,6 @@ int main()
                 state.size_field_dirty = true;
             if (state.show_size_field)
             {
-                if (viewer::imgui_widgets::slider_float("Geometric error", &state.geometric_error, 0.0001f, 0.1f,
-                                                        "%.4f", 3.0f))
-                    state.size_field_dirty = true;
-                if (viewer::imgui_widgets::slider_int("Size smooth iters", &state.size_smooth_iters, 0, 10))
-                    state.size_field_dirty = true;
                 if (viewer::imgui_widgets::slider_float("Color min", &state.size_color_min, state.size_field_lo,
                                                         state.size_field_hi, "%.4f", 3.0f) ||
                     viewer::imgui_widgets::slider_float("Color max", &state.size_color_max, state.size_field_lo,
@@ -524,13 +516,32 @@ int main()
             if (viewer::imgui_widgets::slider_float("Voxel size", &state.tet_params.voxelSpacing, 0.01f, 0.1f))
                 state.size_field_dirty = true;
             viewer::imgui_widgets::slider_int("Hole close", &state.tet_params.holeCloseRadius, 0, 5);
+            viewer::imgui_widgets::section_separator();
+            if (viewer::imgui_widgets::checkbox("Adaptive", &state.tet_params.adaptive))
+                state.size_field_dirty = true;
+            if (state.tet_params.adaptive)
+            {
+                if (viewer::imgui_widgets::slider_float("Min edge (x voxel)", &state.tet_params.minEdgeLength, 0.1f,
+                                                        2.0f))
+                    state.size_field_dirty = true;
+                if (viewer::imgui_widgets::slider_float("Max edge (x voxel)", &state.tet_params.maxEdgeLength, 0.5f,
+                                                        4.0f))
+                    state.size_field_dirty = true;
+                if (state.tet_params.minEdgeLength > state.tet_params.maxEdgeLength)
+                    state.tet_params.minEdgeLength = state.tet_params.maxEdgeLength;
+                if (viewer::imgui_widgets::slider_float("Geometric error (x voxel)",
+                                                        &state.tet_params.geometricError, 0.001f, 1.0f, "%.3f",
+                                                        3.0f))
+                    state.size_field_dirty = true;
+                if (viewer::imgui_widgets::slider_int("Size smooth iters",
+                                                     &state.tet_params.sizeFieldSmoothingIterations, 0, 10))
+                    state.size_field_dirty = true;
+            }
+            viewer::imgui_widgets::section_separator();
             viewer::imgui_widgets::slider_int("Opt iters", &state.tet_params.numOptimizationIterations, 0, 50);
             viewer::imgui_widgets::slider_float("Volume contraction", &state.tet_params.volumeContraction, 0.0f, 1.0f);
             viewer::imgui_widgets::slider_float("Edge contraction", &state.tet_params.edgeContraction, 0.0f, 1.0f);
             viewer::imgui_widgets::checkbox("Edge use normals", &state.tet_params.useNormals);
-            if (viewer::imgui_widgets::slider_float("Max edge length", &state.tet_params.maxEdgeLength, 0.0f, 0.2f))
-                state.size_field_dirty = true;
-            viewer::imgui_widgets::slider_float("Min edge length", &state.tet_params.minEdgeLength, 0.0f, 0.2f);
             viewer::imgui_widgets::checkbox("Project to mesh", &state.tet_params.projectToInputMesh);
             if (state.tet_params.projectToInputMesh)
                 viewer::imgui_widgets::checkbox("Project to closest point", &state.tet_params.projectToClosestPoint);

@@ -9,7 +9,7 @@ GPU tetrahedralization for unstructured, non-manifold polygonal meshes. The mesh
 3. **Fill the interior**: stamp surface voxels into a dense bit grid, flood exterior air from the grid border, then keep every cell the flood did not reach (surface + enclosed solid).
 4. **Split voxels**: only merge surface-voxel corners across faces crossed by input geometry; interior voxels remain connected.
 5. **Tetrahedralize voxels**: each solid cell becomes five tets via an alternating five-tet cube decomposition so neighboring face diagonals agree.
-6. **Subdivide** (optional): split tet edges longer than `maxEdgeLength` at their midpoints.
+6. **Adaptive remesh** (optional): when `adaptive` is on, split tet edges longer than the local size-field `h_max`.
 7. **Prepare boundary tets**: separate multiple boundary faces into different tets.
 8. **Optimize** (optional): each iteration runs tet smoothing, then edge smoothing, then projects boundary nodes onto the input mesh (if enabled).
 
@@ -19,15 +19,18 @@ GPU tetrahedralization for unstructured, non-manifold polygonal meshes. The mesh
 | --- | --- |
 | `voxelSpacing` | Grid cell size in world units |
 | `holeCloseRadius` | Morphological close radius in voxels before flood fill (`0` skips) |
-| `maxEdgeLength` | Subdivide tet edges longer than this value (`0` skips) |
+| `adaptive` | One-shot size-field remesh after tet creation |
+| `minEdgeLength` | Floor for `h_max`, in voxel spacings (adaptive only). Default `0.5` |
+| `maxEdgeLength` | Ceiling for `h_max`, in voxel spacings (adaptive only). Default `2.0` |
+| `geometricError` | Max chordal error ε, in voxel spacings (adaptive only). Default `0.1` |
 | `projectToInputMesh` | Project boundary nodes onto the input surface (alone or inside the optimization loop) |
 | `projectToClosestPoint` | When projecting, snap to the closest input-mesh point instead of raycasting along the estimated normal |
-| `numOptimizationIterations` | Tet smooth, then edge smooth, then project (if enabled). `0` skips smoothing; projection still runs once if enabled |
+| `numOptimizationIterations` | Tet smooth, then edge smooth, then project (if enabled). `0` skips the loop, including projection |
 | `volumeContraction` | Fraction of current tet volume to remove while shape-matching (`0` skips tet smoothing) |
 | `edgeContraction` | Fraction of each tet-edge length to pull endpoints together (`0` skips edge smoothing) |
 | `useNormals` | Edge smoothing only. On: every edge contracts both ends, then surface nodes keep the tangential part. Off: mixed interior/surface edges move only the interior node |
 
-See `TetrahedralizerParams` in `include/tetrahedralizer/Tetrahedralizer.h`.
+See `TetrahedralizerParams` in `include/tetrahedralizer/Tetrahedralizer.h`. Adaptive length parameters are in voxel spacings; the pipeline multiplies by `voxelSpacing` before sampling the size field.
 
 ## Status
 
@@ -37,16 +40,17 @@ See `TetrahedralizerParams` in `include/tetrahedralizer/Tetrahedralizer.h`.
 - Optional hole closing and exterior flood-fill interior
 - Face-aware voxel splitting before tet creation
 - Five-tet voxel decomposition → node positions and tet indices
-- Optional maximum-edge-length subdivision using midpoint vertices and template-based tet subdivision
-- Optional minimum-edge-length collapse (one shot, before optimize)
+- One-shot adaptive remesh (`adaptive`): edge smooth, closest-point sample, split long edges until idle
 - Optional projection of boundary nodes onto the input mesh (outward-normal raycast or closest point)
 - Optional optimization loop: tet smoothing, edge smoothing, then project
 - Face-neighbor table (`tet_neighbors`, 4 slots per tet) via sorted face pairing
-- Interactive viewer: load OBJ, run tetrahedralization, inspect the tet mesh (clip planes, voxel size, subdivision/project/optimize options)
+- CPU curvature size field on the input mesh (`computeSurfaceSizeField`) and log-colormap visualization
+- Interactive viewer: load OBJ, run tetrahedralization, inspect the tet mesh (clip planes, voxel size, subdivision/project/optimize options); left-click the input mesh to set the orbit point
 
 ### Not implemented yet
 
-- Adaptive mesh (curvature size field, visualization, split/collapse inside optimize)
+- Adaptive remesh inside optimize
+- Adaptive collapse from the size field
 
 ### Voxel split pipeline
 
@@ -108,7 +112,7 @@ Then compact:
 
 ### Subdivision pipeline
 
-Enabled when `maxEdgeLength > 0`. Host-baked 64×diagBits child templates provide conforming subdivisions for every combination of subdivided tet edges:
+Enabled by `adaptive` remesh and by `Tetrahedralizer::subdivide`. Host-baked 64×diagBits child templates provide conforming subdivisions for every combination of subdivided tet edges:
 
 1. **Subdivision vertices**: unique tet edges longer than `maxEdgeLength` → append midpoint nodes.
 2. **Steiner vertices**: for each tet, resolve `mask` / `diagBits`; if the template uses local index 10, count → scan → append centroids; `steinerVertexId[tet]`.
@@ -116,7 +120,7 @@ Enabled when `maxEdgeLength > 0`. Host-baked 64×diagBits child templates provid
 
 ### Projection / optimization pipeline
 
-Enabled by `projectToInputMesh` and/or `numOptimizationIterations > 0`. Runs after neighbors are built.
+Enabled when `numOptimizationIterations > 0`. Runs after neighbors are built.
 
 **Projection** (when `projectToInputMesh`):
 
@@ -128,17 +132,19 @@ Before projection, boundary topology is refined until no tet edge has both oppos
 
 Projection and smoothing never write node positions directly. Both fill a per-node offset buffer, and `applyNodeMovesSafely` then halves the step of every node belonging to a tet that the move would shrink below `kMinMoveVolumeFraction` of its current volume, repeating until no tet is affected (a step below `kMinMoveScale` becomes zero, which restores the original corners, so the loop always terminates). Without this backoff interior midpoints added by boundary refinement can cross a boundary face and produce spikes.
 
-**Optimization** (`numOptimizationIterations` times): tet smoothing if `volumeContraction > 0`, then edge smoothing if `edgeContraction > 0`, then project if enabled. Tet smoothing shape-matches to a regular tet. With projection on, surface nodes keep only the tangential part of the tet-smooth correction (`corr -= n * dot(corr, n)`). Edge smoothing with `useNormals` on contracts every edge then strips the normal component on surface nodes; with it off, mixed interior/surface edges move only the interior node. With iterations `0` and projection on, projection runs once.
+**Optimization** (`numOptimizationIterations` times): tet smoothing if `volumeContraction > 0`, then edge smoothing if `edgeContraction > 0`, then project if enabled. Tet smoothing shape-matches to a regular tet. With projection on, surface nodes keep only the tangential part of the tet-smooth correction (`corr -= n * dot(corr, n)`). Edge smoothing with `useNormals` on contracts every edge then strips the normal component on surface nodes; with it off, mixed interior/surface edges move only the interior node. Iterations `0` skips the loop; projection does not run.
 
 ### Adaptive mesh
 
-Not implemented. Goal: a spatially varying surface edge length so split/collapse capture input curvature, instead of the current global `maxEdgeLength` / `minEdgeLength`.
+The size field and input-mesh visualization are implemented. When `adaptive` is on, a one-shot remesh runs after tet creation: a few edge-smooth steps, closest-point size sample on surface nodes, then split edges longer than local `h_max` until idle. `minEdgeLength` / `maxEdgeLength` / `geometricError` are voxel-relative clamps and ε; they are ignored when adaptive is off. Optimize does not change topology.
+
+Goal: a spatially varying surface edge length so split/collapse capture input curvature, instead of those globals.
 
 Uniform one-shot split then collapse before optimize is enough on the voxel grid. It is not enough once nodes sit on the real surface: projection lengthens edges on convex regions and shortens them on concave ones, and both split and surface–surface collapse place nodes at chord midpoints that are off the surface until project runs. Adaptive sizing should live in the optimize loop.
 
 #### Size field on the input mesh
 
-Store one scalar per **input-mesh vertex** (parallel to `positions`): the local maximum surface edge length `h_max`. Tet nodes do not own the field; they sample it later. A tet edge uses the **minimum** of its endpoint samples (or the minimum of a triangle's three vertices) so the stricter vertex wins.
+`computeSurfaceSizeField` (`src/SizeField.cpp`) stores one scalar per **input-mesh vertex** (parallel to `positions`): the local maximum surface edge length `h_max`. CPU only. Tet nodes do not own the field; they will sample it later. A tet edge uses the **minimum** of its endpoint samples (or the minimum of a triangle's three vertices) so the stricter vertex wins.
 
 Do not use mean curvature. It can vanish at a saddle while the surface still bends. Use **maximum turning** (max |principal curvature| κ), from vertex-normal variation, which also works on non-manifold input:
 
@@ -157,16 +163,16 @@ Isotropic sizing from |κ|_max is the first version (a cylinder is over-refined 
 
 #### Smoothing
 
-Tessellation noise spikes κ. Smooth **`h_max`**, not κ: averaging curvature and then taking `√(1/κ)` still maps a leftover spike to a tiny edge. Same accumulate/apply pattern as tet and edge smoothing, a few iterations (about 2–5); more washes out real features.
+Tessellation noise spikes κ. Smooth **`h_max`**, not κ: averaging curvature and then taking `√(1/κ)` still maps a leftover spike to a tiny edge. Same accumulate/apply pattern as tet and edge smoothing, a few iterations (about 2–5); more washes out real features. The CPU path does this sequentially:
 
-1. **Accumulate** (one thread per input triangle): mean of the three vertex values, `atomicAdd` that mean onto each vertex and `atomicAdd` 1 onto each count.
-2. **Apply** (one thread per vertex): `value = sum / count`.
+1. **Accumulate** (per input triangle): mean of the three vertex values, add that mean onto each vertex and add 1 onto each count.
+2. **Apply** (per vertex): `value = sum / count`.
 
 The triangle mean includes the vertex itself, so each step keeps about a third of the old value. Area-weighted `atomicAdd(mean * area)` / `count += area` is optional. To preserve creases later, lock vertices with a large dihedral rather than mixing the unsmoothed field back in.
 
 #### Visualization
 
-First implementation: compute the field (CPU is enough) and color the **input mesh**, not the tets. Color `h_max` (log-scaled colormap, range slider): long/blue = flat, short/red = high curvature. Sanity checks: a cube is cold on faces and hot on the 12 edges; the dragon is fine on the body and tight on horns, claws, and the mouth. Salt-and-pepper means the smoother needs more iterations or the input has folded triangles.
+The viewer colors the **input mesh**, not the tets (`Show size field`). Color `h_max` (log-scaled colormap, range slider): long/blue = flat, short/red = high curvature. Salt-and-pepper means the smoother needs more iterations or the input has folded triangles.
 
 #### Remesh inside optimize
 
@@ -187,7 +193,10 @@ Do not project after every collapse kernel; once per iteration after topology ha
 | Path | Role |
 | --- | --- |
 | `include/tetrahedralizer/Tetrahedralizer.h` | Public API and parameters |
+| `include/tetrahedralizer/SizeField.h` | CPU size field (`h_max` from max turning) |
 | `include/tetrahedralizer/TriMesh.h` | OBJ load |
+| `src/SizeField.cpp` | Host size-field compute and smoothing |
+| `src/tetrahedralizers/AdaptiveRemesh.cu` | One-shot adaptive remesh (smooth, sample, collapse/split) |
 | `src/Tetrahedralizer.cpp` | Host entry; dispatches to the GPU path |
 | `src/tetrahedralizers/GpuTetrahedralizer.cu` | Pipeline orchestrator (`create` / `subdivide`) |
 | `src/tetrahedralizers/Voxelize.cu` | Surface voxelization, hole close, flood fill |
@@ -196,6 +205,7 @@ Do not project after every collapse kernel; once per iteration after topology ha
 | `src/tetrahedralizers/Optimize.cu` | Shape-matching smooth, edge smooth, project |
 | `src/tetrahedralizers/TetCutTemplates.h` | Host-baked tet edge-subdivision tables |
 | `src/utils/GpuBVH.*` | GPU BVH used by voxel face queries and projection raycasts |
+| `src/utils/CpuBVH.*` | Host BVH for viewer picking (click-to-orbit) |
 | `src/viewer/` | OpenGL / ImGui viewer |
 
 ## Build

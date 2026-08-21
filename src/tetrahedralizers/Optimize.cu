@@ -241,8 +241,10 @@ void smoothTets(TetDeviceData& data, int iterations, float volumeContraction, co
     cudaCheck(cudaDeviceSynchronize());
 }
 
-void smoothEdges(TetDeviceData& data, int iterations, float contraction, const Vec3* classifyNormals = nullptr,
-                 const Vec3* applyNormals = nullptr)
+} // namespace
+
+void smoothEdges(TetDeviceData& data, int iterations, float contraction, const Vec3* classifyNormals,
+                 const Vec3* applyNormals)
 {
     if (iterations <= 0 || !(contraction > 0.0f) || data.numTets <= 0 || data.numNodes <= 0)
         return;
@@ -261,6 +263,9 @@ void smoothEdges(TetDeviceData& data, int iterations, float contraction, const V
     }
     cudaCheck(cudaDeviceSynchronize());
 }
+
+namespace
+{
 
 __global__ void accumulateSurfaceNormals(TetDeviceData data, Vec3* normals)
 {
@@ -467,20 +472,10 @@ void computeSurfaceNormals(TetDeviceData& data, DeviceBuffer<Vec3>& normals)
 
 void runOptimization(TetDeviceData& data, const TetrahedralizerParams& params)
 {
-    const bool project = params.projectToInputMesh;
-
     if (params.numOptimizationIterations <= 0)
-    {
-        if (project)
-        {
-            DeviceBuffer<Vec3> normals;
-            computeSurfaceNormals(data, normals);
-            projectBoundaryNodes(data, normals.buffer, params);
-            normals.free();
-        }
         return;
-    }
 
+    const bool project = params.projectToInputMesh;
     DeviceBuffer<Vec3> normals;
     for (int iteration = 0; iteration < params.numOptimizationIterations; ++iteration)
     {

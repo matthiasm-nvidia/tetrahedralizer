@@ -459,10 +459,10 @@ void compactTets(TetDeviceData& data)
 
 } // namespace
 
-void collapseShortEdges(TetDeviceData& data, float minEdgeLength)
+bool collapseShortEdges(TetDeviceData& data, float minEdgeLength)
 {
     if (!(minEdgeLength > 0.0f) || data.numTets <= 0 || data.numNodes <= 0)
-        return;
+        return false;
     if (data.numTets > std::numeric_limits<int>::max() / 6)
         throw std::runtime_error("Tet edge count exceeds the supported range");
     if (!computeNeighbors(data))
@@ -491,7 +491,7 @@ void collapseShortEdges(TetDeviceData& data, float minEdgeLength)
     CUDA_LAUNCH(createCollapseMap, numEdges, data, minEdgeLength, false, normals.buffer);
     normals.free();
     if (readDeviceInt(data.anyChanged, 0) == 0)
-        return;
+        return false;
 
     if (kRestrictCollapses)
         restrictCollapses(data);
@@ -516,6 +516,7 @@ void collapseShortEdges(TetDeviceData& data, float minEdgeLength)
     keys.free();
 
     compactTets(data);
+    return true;
 }
 
 } // namespace tetrahedralizer

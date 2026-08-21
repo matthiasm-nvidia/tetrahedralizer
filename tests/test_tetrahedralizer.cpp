@@ -224,6 +224,17 @@ void makeUnitCube(std::vector<Vec3>& vertices, std::vector<std::uint32_t>& indic
     makeCube(vertices, indices, 1.0f);
 }
 
+void makeOctahedron(std::vector<Vec3>& vertices, std::vector<std::uint32_t>& indices, float radius)
+{
+    vertices = {
+        {radius, 0.0f, 0.0f}, {-radius, 0.0f, 0.0f}, {0.0f, radius, 0.0f},
+        {0.0f, -radius, 0.0f}, {0.0f, 0.0f, radius}, {0.0f, 0.0f, -radius},
+    };
+    indices = {
+        0, 2, 4, 2, 1, 4, 1, 3, 4, 3, 0, 4, 0, 5, 2, 2, 5, 1, 1, 5, 3, 3, 5, 0,
+    };
+}
+
 void makeNearbySheets(std::vector<Vec3>& vertices, std::vector<std::uint32_t>& indices)
 {
     // The two parallel triangles occupy face-adjacent voxels but neither crosses
@@ -407,7 +418,7 @@ MU_TEST(test_subdivision_preserves_manifold_volume)
     mu_check(std::fabs(stats.volume - before.volume) < 5.0e-3f);
 }
 
-MU_TEST(test_min_edge_length_collapses)
+MU_TEST(test_adaptive_off_ignores_edge_scales)
 {
     std::vector<Vec3> vertices;
     std::vector<std::uint32_t> indices;
@@ -421,19 +432,13 @@ MU_TEST(test_min_edge_length_collapses)
     Tetrahedralizer baseMesh;
     baseMesh.create(vertices, indices, params);
 
-    params.minEdgeLength = 1.01f;
-    Tetrahedralizer collapsed;
-    collapsed.create(vertices, indices, params);
-    mu_check(!collapsed.empty());
-    mu_check(collapsed.numTets() < baseMesh.numTets());
-    mu_check(collapsed.nodes.size() < baseMesh.nodes.size());
-
-    const MeshStats stats = analyse(collapsed);
-    mu_assert_int_eq(0, stats.badTets);
-    mu_assert_int_eq(0, stats.overusedFaces);
-    mu_assert_int_eq(0, stats.neighborMismatches);
-    mu_assert_int_eq(0, stats.oddBoundaryEdges);
-    mu_check(stats.maxBoundaryFacesPerTet <= 1);
+    params.minEdgeLength = 0.1f;
+    params.maxEdgeLength = 0.5f;
+    params.geometricError = 0.01f;
+    Tetrahedralizer ignored;
+    ignored.create(vertices, indices, params);
+    mu_assert_int_eq(baseMesh.numTets(), ignored.numTets());
+    mu_assert_int_eq(static_cast<int>(baseMesh.nodes.size()), static_cast<int>(ignored.nodes.size()));
 }
 
 MU_TEST(test_max_edge_length_parameter)
@@ -450,6 +455,7 @@ MU_TEST(test_max_edge_length_parameter)
     Tetrahedralizer baseMesh;
     baseMesh.create(vertices, indices, params);
 
+    params.adaptive = true;
     params.maxEdgeLength = 1.1f;
     Tetrahedralizer subdivided;
     subdivided.create(vertices, indices, params);
@@ -459,9 +465,9 @@ MU_TEST(test_max_edge_length_parameter)
     mu_assert_int_eq(0, stats.badTets);
     mu_assert_int_eq(0, stats.overusedFaces);
     mu_assert_int_eq(0, stats.neighborMismatches);
+    mu_assert_int_eq(0, stats.oddBoundaryEdges);
     mu_check(subdivided.nodes.size() > baseMesh.nodes.size());
     mu_check(subdivided.numTets() > baseMesh.numTets());
-    mu_check(std::fabs(stats.volume - analyse(baseMesh).volume) < 5.0e-3f);
 }
 
 MU_TEST(test_project_to_input_mesh_smoke)
@@ -479,6 +485,9 @@ MU_TEST(test_project_to_input_mesh_smoke)
     baseMesh.create(vertices, indices, params);
 
     params.projectToInputMesh = true;
+    params.numOptimizationIterations = 1;
+    params.volumeContraction = 0.0f;
+    params.edgeContraction = 0.0f;
     Tetrahedralizer projected;
     projected.create(vertices, indices, params);
     mu_check(!projected.empty());
@@ -517,6 +526,9 @@ MU_TEST(test_project_to_closest_point_smoke)
 
     params.projectToInputMesh = true;
     params.projectToClosestPoint = true;
+    params.numOptimizationIterations = 1;
+    params.volumeContraction = 0.0f;
+    params.edgeContraction = 0.0f;
     Tetrahedralizer projected;
     projected.create(vertices, indices, params);
     mu_check(!projected.empty());
@@ -696,7 +708,7 @@ MU_TEST(test_dragon_voxel_spacing)
     mu_check(stats.maxBoundaryFacesPerTet <= 1);
 }
 
-MU_TEST(test_dragon_collapse_stays_manifold)
+MU_TEST(test_dragon_adaptive_stays_manifold)
 {
     tetrahedralizer::TriMesh mesh;
     const std::string path = std::string(TETRAHEDRALIZER_TEST_DATA_DIR) + "/dragon.obj";
@@ -705,7 +717,7 @@ MU_TEST(test_dragon_collapse_stays_manifold)
 
     TetrahedralizerParams params;
     params.voxelSpacing = 0.1f;
-    params.minEdgeLength = 0.16f;
+    params.adaptive = true;
     params.numOptimizationIterations = 0;
     params.projectToInputMesh = false;
 
@@ -726,7 +738,7 @@ MU_TEST(test_dragon_collapse_stays_manifold)
     mu_assert_int_eq(0, stats.oddBoundaryEdges);
 }
 
-MU_TEST(test_dragon_collapse_fine_stays_manifold)
+MU_TEST(test_dragon_adaptive_fine_stays_manifold)
 {
     tetrahedralizer::TriMesh mesh;
     const std::string path = std::string(TETRAHEDRALIZER_TEST_DATA_DIR) + "/dragon.obj";
@@ -735,7 +747,7 @@ MU_TEST(test_dragon_collapse_fine_stays_manifold)
 
     TetrahedralizerParams params;
     params.voxelSpacing = 0.05f;
-    params.minEdgeLength = 0.1f;
+    params.adaptive = true;
     params.numOptimizationIterations = 0;
     params.projectToInputMesh = false;
 
@@ -754,6 +766,61 @@ MU_TEST(test_dragon_collapse_fine_stays_manifold)
     mu_assert_int_eq(0, stats.overusedFaces);
     mu_assert_int_eq(0, stats.neighborMismatches);
     mu_assert_int_eq(0, stats.oddBoundaryEdges);
+}
+
+MU_TEST(test_adaptive_size_field_cube_stays_manifold)
+{
+    std::vector<Vec3> vertices;
+    std::vector<std::uint32_t> indices;
+    makeCube(vertices, indices, 3.0f);
+
+    TetrahedralizerParams params;
+    params.voxelSpacing = 1.0f;
+    params.adaptive = true;
+    params.geometricError = 0.01f;
+    params.numOptimizationIterations = 0;
+    params.projectToInputMesh = false;
+
+    Tetrahedralizer mesh;
+    mesh.create(vertices, indices, params);
+    mu_check(!mesh.empty());
+
+    const MeshStats stats = analyse(mesh);
+    mu_assert_int_eq(0, stats.badTets);
+    mu_assert_int_eq(0, stats.overusedFaces);
+    mu_assert_int_eq(0, stats.neighborMismatches);
+    mu_assert_int_eq(0, stats.oddBoundaryEdges);
+    mu_check(stats.maxBoundaryFacesPerTet <= 1);
+}
+
+MU_TEST(test_adaptive_size_field_refines_curved)
+{
+    std::vector<Vec3> vertices;
+    std::vector<std::uint32_t> indices;
+    makeOctahedron(vertices, indices, 1.0f);
+
+    TetrahedralizerParams params;
+    params.voxelSpacing = 0.25f;
+    params.numOptimizationIterations = 0;
+    params.projectToInputMesh = false;
+
+    Tetrahedralizer baseMesh;
+    baseMesh.create(vertices, indices, params);
+    mu_check(!baseMesh.empty());
+
+    params.adaptive = true;
+    params.geometricError = 0.01f;
+    Tetrahedralizer refined;
+    refined.create(vertices, indices, params);
+    mu_check(!refined.empty());
+    mu_check(refined.numTets() > baseMesh.numTets());
+
+    const MeshStats stats = analyse(refined);
+    mu_assert_int_eq(0, stats.badTets);
+    mu_assert_int_eq(0, stats.overusedFaces);
+    mu_assert_int_eq(0, stats.neighborMismatches);
+    mu_assert_int_eq(0, stats.oddBoundaryEdges);
+    mu_check(stats.maxBoundaryFacesPerTet <= 1);
 }
 
 MU_TEST(test_size_field_flat_is_coarse)
@@ -837,7 +904,7 @@ MU_TEST_SUITE(test_suite)
     MU_RUN_TEST(test_split_voxels_keeps_interior_connected);
     MU_RUN_TEST(test_split_voxels_disconnects_nearby_sheets);
     MU_RUN_TEST(test_subdivision_preserves_manifold_volume);
-    MU_RUN_TEST(test_min_edge_length_collapses);
+    MU_RUN_TEST(test_adaptive_off_ignores_edge_scales);
     MU_RUN_TEST(test_max_edge_length_parameter);
     MU_RUN_TEST(test_project_to_input_mesh_smoke);
     MU_RUN_TEST(test_project_to_closest_point_smoke);
@@ -845,12 +912,14 @@ MU_TEST_SUITE(test_suite)
     MU_RUN_TEST(test_optimization_loop_smoke);
     MU_RUN_TEST(test_node_normals_mark_boundary);
     MU_RUN_TEST(test_smoothing_without_projection_moves_nodes);
+    MU_RUN_TEST(test_adaptive_size_field_cube_stays_manifold);
+    MU_RUN_TEST(test_adaptive_size_field_refines_curved);
     MU_RUN_TEST(test_size_field_flat_is_coarse);
     MU_RUN_TEST(test_size_field_turning_refines);
     MU_RUN_TEST(test_cpu_bvh_raycast_hits_triangle);
     MU_RUN_TEST(test_dragon_voxel_spacing);
-    MU_RUN_TEST(test_dragon_collapse_stays_manifold);
-    MU_RUN_TEST(test_dragon_collapse_fine_stays_manifold);
+    MU_RUN_TEST(test_dragon_adaptive_stays_manifold);
+    MU_RUN_TEST(test_dragon_adaptive_fine_stays_manifold);
 }
 
 int main()

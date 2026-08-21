@@ -58,13 +58,17 @@ Start from the 3×3×3 voxel mesh and call `subdivide(1.1)`. Checks:
 - Total volume preserved (float tolerance)
 - Node and tet counts increase
 
+### `test_adaptive_off_ignores_edge_scales`
+
+Cube create with tight min/max and a small ε, but `adaptive` off. Node and tet counts match the default (non-adaptive) run.
+
 ### `test_max_edge_length_parameter`
 
-Run the full create pipeline with `maxEdgeLength = 1.1`. Checks manifold / positive volumes, preserved volume, and increased node and tet counts relative to the unsubdivided mesh.
+Adaptive create with `maxEdgeLength = 1.1` (voxel units) on a cube. Checks manifold / positive volumes and increased node and tet counts relative to the unsubdivided mesh. Volume is not compared: adaptive remesh edge-smooths before splitting.
 
 ### `test_project_to_input_mesh_smoke`
 
-Voxelize a cube with `projectToInputMesh` (normal raycast). Some boundary nodes move, tet/node counts match the unprojected mesh, and the mesh stays manifold with at most one boundary face per tet.
+Voxelize a cube with `projectToInputMesh` (normal raycast) and one optimization iteration (smooth contractions off). Some boundary nodes move, tet/node counts match the unprojected mesh, and the mesh stays manifold with at most one boundary face per tet.
 
 ### `test_project_to_closest_point_smoke`
 

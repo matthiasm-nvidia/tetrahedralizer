@@ -1,6 +1,8 @@
 #include "GpuTetrahedralizer.h"
 #include "TetDeviceData.h"
 
+#include "tetrahedralizer/SizeField.h"
+
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -41,10 +43,16 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
         throw std::invalid_argument("Volume contraction must be finite and non-negative");
     if (!(params.edgeContraction >= 0.0f) || !std::isfinite(params.edgeContraction))
         throw std::invalid_argument("Edge contraction must be finite and non-negative");
-    if (!(params.maxEdgeLength >= 0.0f) || !std::isfinite(params.maxEdgeLength))
-        throw std::invalid_argument("Maximum edge length must be finite and non-negative");
-    if (!(params.minEdgeLength >= 0.0f) || !std::isfinite(params.minEdgeLength))
-        throw std::invalid_argument("Minimum edge length must be finite and non-negative");
+    if (!(params.minEdgeLength > 0.0f) || !std::isfinite(params.minEdgeLength))
+        throw std::invalid_argument("Minimum edge length must be finite and greater than zero");
+    if (!(params.maxEdgeLength > 0.0f) || !std::isfinite(params.maxEdgeLength))
+        throw std::invalid_argument("Maximum edge length must be finite and greater than zero");
+    if (params.minEdgeLength > params.maxEdgeLength)
+        throw std::invalid_argument("Minimum edge length must not exceed maximum edge length");
+    if (!(params.geometricError >= 0.0f) || !std::isfinite(params.geometricError))
+        throw std::invalid_argument("Geometric error must be finite and non-negative");
+    if (params.sizeFieldSmoothingIterations < 0)
+        throw std::invalid_argument("Size field smoothing iteration count must be non-negative");
     if (mesh_indices.size() / 3 > static_cast<std::size_t>(std::numeric_limits<int>::max()))
         throw std::runtime_error("Triangle count exceeds the supported range");
 
@@ -109,10 +117,17 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
         createSplitVoxelNodes(data);
         createFiveTets(data);
 
-        if (params.maxEdgeLength > 0.0f)
-            subdivideLongEdges(data, params.maxEdgeLength);
-        if (params.minEdgeLength > 0.0f)
-            collapseShortEdges(data, params.minEdgeLength);
+        if (params.adaptive)
+        {
+            SizeFieldParams fieldParams;
+            fieldParams.geometricError = params.geometricError * params.voxelSpacing;
+            fieldParams.minSize = params.minEdgeLength * params.voxelSpacing;
+            fieldParams.maxSize = params.maxEdgeLength * params.voxelSpacing;
+            fieldParams.smoothingIterations = params.sizeFieldSmoothingIterations;
+            data.meshVertexSizes.set(
+                computeSurfaceSizeField(mesh_vertices, mesh_indices, fieldParams));
+            runAdaptiveRemesh(data, params, fieldParams.maxSize);
+        }
 
         cudaCheck(cudaDeviceSynchronize());
 

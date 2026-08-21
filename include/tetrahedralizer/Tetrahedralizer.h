@@ -14,11 +14,16 @@ struct TetrahedralizerParams
     // Morphological close radius in voxels before the exterior flood fill.
     // 0 skips closing; larger values seal bigger shell holes.
     int holeCloseRadius = 0;
-    // Subdivide tet edges longer than this value at their midpoints.
-    // 0 skips subdivision.
-    float maxEdgeLength = 0.0f;
-    // Collapse tet edges shorter than this value. 0 skips collapse.
-    float minEdgeLength = 0.0f;
+    // One-shot adaptive remesh after tet creation (size field, then split).
+    bool adaptive = false;
+    // Floor for h_max, in voxel spacings. Used only when adaptive is on.
+    float minEdgeLength = 0.5f;
+    // Ceiling for h_max, in voxel spacings. Used only when adaptive is on.
+    float maxEdgeLength = 2.0f;
+    // Max chordal error ε, in voxel spacings. Used only when adaptive is on.
+    float geometricError = 0.1f;
+    // Jacobi-style averaging of h_max on the input mesh before sampling.
+    int sizeFieldSmoothingIterations = 3;
     // Project boundary nodes onto the input mesh along estimated outward normals.
     bool projectToInputMesh = true;
     // When projecting, snap each boundary node to the closest input-mesh point
@@ -27,7 +32,7 @@ struct TetrahedralizerParams
     // Optimization iterations: each does tet smoothing, then edge smoothing, then
     // project (if enabled). When projecting, surface normals are recomputed before
     // each smooth so surface nodes only slide tangentially, and again before project.
-    // 0 skips smoothing; projection still runs once if enabled.
+    // 0 skips the optimization loop, including projection.
     int numOptimizationIterations = 15;
     // Fraction of current tet volume to remove while shape-matching to a regular tet.
     // 0 skips tet smoothing; 0.2 targets 80% of the current volume.
