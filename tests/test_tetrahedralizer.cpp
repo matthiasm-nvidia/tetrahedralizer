@@ -4,6 +4,7 @@
 #include "tetrahedralizer/Tetrahedralizer.h"
 #include "tetrahedralizer/TriMesh.h"
 #include "tetrahedralizer/Vec.h"
+#include "utils/CpuBVH.h"
 #include "tetrahedralizers/TetCutTemplates.h"
 
 #include <algorithm>
@@ -802,6 +803,33 @@ MU_TEST(test_size_field_turning_refines)
         mu_check(coarser[i] > sizes[i]);
 }
 
+MU_TEST(test_cpu_bvh_raycast_hits_triangle)
+{
+    const std::vector<Vec3> vertices = {
+        {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f},
+        {2.0f, 0.0f, 0.0f}, {3.0f, 0.0f, 0.0f}, {2.0f, 1.0f, 0.0f},
+    };
+    const std::vector<std::uint32_t> indices = {0, 1, 2, 3, 4, 5};
+
+    tetrahedralizer::CpuBVH bvh;
+    tetrahedralizer::CpuBVHBuilder{}.build(bvh, vertices, indices);
+    mu_check(!bvh.empty());
+
+    tetrahedralizer::Vec3 bary;
+    tetrahedralizer::Vec3 normal;
+    int triNr = -1;
+    float t = 0.0f;
+    bool inside = false;
+
+    const tetrahedralizer::Ray hitRay(Vec3(0.2f, 0.2f, 1.0f), Vec3(0.0f, 0.0f, -1.0f));
+    mu_check(bvh.raycast(hitRay, vertices.data(), indices.data(), bary, triNr, t, normal, inside));
+    mu_assert_int_eq(0, triNr);
+    mu_check(std::fabs(t - 1.0f) < 1.0e-4f);
+
+    const tetrahedralizer::Ray missRay(Vec3(10.0f, 10.0f, 1.0f), Vec3(0.0f, 0.0f, -1.0f));
+    mu_check(!bvh.raycast(missRay, vertices.data(), indices.data(), bary, triNr, t, normal, inside));
+}
+
 MU_TEST_SUITE(test_suite)
 {
     MU_RUN_TEST(test_cut_templates_tile_reference);
@@ -819,6 +847,7 @@ MU_TEST_SUITE(test_suite)
     MU_RUN_TEST(test_smoothing_without_projection_moves_nodes);
     MU_RUN_TEST(test_size_field_flat_is_coarse);
     MU_RUN_TEST(test_size_field_turning_refines);
+    MU_RUN_TEST(test_cpu_bvh_raycast_hits_triangle);
     MU_RUN_TEST(test_dragon_voxel_spacing);
     MU_RUN_TEST(test_dragon_collapse_stays_manifold);
     MU_RUN_TEST(test_dragon_collapse_fine_stays_manifold);

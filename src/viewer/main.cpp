@@ -22,6 +22,7 @@
 #include "tetrahedralizer/Tetrahedralizer.h"
 #include "tetrahedralizer/TriMesh.h"
 #include "TriMeshRenderer.h"
+#include "utils/CpuBVH.h"
 #include "viewer_imgui_theme.h"
 #include "viewer_imgui_widgets.h"
 
@@ -40,6 +41,8 @@ struct AppState
     tetrahedralizer::Bounds3 mesh_bounds;
     float scene_scale = 1.0f;
     tetrahedralizer::TetrahedralizerParams tet_params;
+    tetrahedralizer::CpuBVH mesh_bvh;
+    const tetrahedralizer::TriMesh* mesh = nullptr;
     bool show_size_field = false;
     float geometric_error = 0.01f;
     int size_smooth_iters = 3;
@@ -89,6 +92,66 @@ void disableClipPlanes()
     glDisable(GL_CLIP_PLANE2);
 }
 
+void getMouseRay(GLFWwindow* window, const AppState& state, tetrahedralizer::Ray& ray)
+{
+    int winW = 0;
+    int winH = 0;
+    int fbW = 0;
+    int fbH = 0;
+    glfwGetWindowSize(window, &winW, &winH);
+    glfwGetFramebufferSize(window, &fbW, &fbH);
+
+    const int xi = winW > 0 ? static_cast<int>(state.mouse_x * static_cast<double>(fbW) / winW) : state.mouse_x;
+    int yi = winH > 0 ? static_cast<int>(state.mouse_y * static_cast<double>(fbH) / winH) : state.mouse_y;
+
+    GLint viewport[4] = {0, 0, fbW, fbH};
+    GLdouble modelMatrix[16];
+    GLdouble projMatrix[16];
+    for (int i = 0; i < 16; ++i)
+    {
+        modelMatrix[i] = static_cast<GLdouble>(state.camera.view_mat[i]);
+        projMatrix[i] = static_cast<GLdouble>(state.camera.proj_mat[i]);
+    }
+
+    yi = viewport[3] - yi - 1;
+
+    GLdouble wx = 0.0;
+    GLdouble wy = 0.0;
+    GLdouble wz = 0.0;
+    gluUnProject(static_cast<GLdouble>(xi), static_cast<GLdouble>(yi), 0.0, modelMatrix, projMatrix, viewport, &wx,
+                 &wy, &wz);
+    const tetrahedralizer::Vec3 orig(static_cast<float>(wx), static_cast<float>(wy), static_cast<float>(wz));
+    gluUnProject(static_cast<GLdouble>(xi), static_cast<GLdouble>(yi), 1.0, modelMatrix, projMatrix, viewport, &wx,
+                 &wy, &wz);
+    tetrahedralizer::Vec3 dir(static_cast<float>(wx) - orig.x, static_cast<float>(wy) - orig.y,
+                              static_cast<float>(wz) - orig.z);
+    dir.normalize();
+    ray = tetrahedralizer::Ray(orig, dir);
+}
+
+void pickOrbitCenter(GLFWwindow* window, AppState& state)
+{
+    if (state.mesh == nullptr || state.mesh->empty() || state.mesh_bvh.empty())
+        return;
+
+    tetrahedralizer::Ray ray;
+    getMouseRay(window, state, ray);
+
+    tetrahedralizer::Vec3 bary;
+    tetrahedralizer::Vec3 normal;
+    int triNr = -1;
+    float t = 0.0f;
+    bool inside = false;
+    tetrahedralizer::Vec3 clip = clipLimits(state);
+    const tetrahedralizer::Vec3* clipPtr = nullptr;
+    if (state.clip[0] > 0 || state.clip[1] > 0 || state.clip[2] > 0)
+        clipPtr = &clip;
+
+    if (state.mesh_bvh.raycast(ray, state.mesh->positions.data(), state.mesh->triangle_indices.data(), bary, triNr, t,
+                               normal, inside, clipPtr))
+        state.orbit_center = ray.at(t);
+}
+
 AppState* appState(GLFWwindow* window)
 {
     return static_cast<AppState*>(glfwGetWindowUserPointer(window));
@@ -133,6 +196,7 @@ bool loadMesh(GLFWwindow* window, const std::string& path, AppState& state, tetr
 
     mesh = std::move(loaded_mesh);
     tri_renderer.upload(mesh.positions, mesh.triangle_indices);
+    tetrahedralizer::CpuBVHBuilder{}.build(state.mesh_bvh, mesh.positions, mesh.triangle_indices);
 
     tets.clear();
     tet_renderer.clear();
@@ -243,6 +307,12 @@ void onMouseButton(GLFWwindow* window, int button, int action, int mods)
     glfwGetCursorPos(window, &x, &y);
     state->mouse_x = static_cast<int>(x);
     state->mouse_y = static_cast<int>(y);
+
+    if (imguiWantsMouse() || action != GLFW_PRESS)
+        return;
+
+    if (button == GLFW_MOUSE_BUTTON_LEFT)
+        pickOrbitCenter(window, *state);
 }
 
 void onMouseScroll(GLFWwindow* window, double xoffset, double yoffset)
@@ -351,6 +421,7 @@ int main()
     tetrahedralizer::TriMeshRenderer tri_renderer;
     tetrahedralizer::Tetrahedralizer tets;
     tetrahedralizer::TetMeshRenderer tet_renderer;
+    state.mesh = &mesh;
     bool show_mesh = true;
     bool show_tets = true;
     bool wireframe = false;
