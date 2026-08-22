@@ -483,7 +483,7 @@ void runOptimization(TetDeviceData& data, const TetrahedralizerParams& params)
     for (int iteration = 0; iteration < totalIterations; ++iteration)
     {
         if (canSplit && iteration >= params.numOptimizationIterations)
-            runAdaptiveSplit(data, maxSize);
+            runAdaptiveSplit(data, maxSize, params.removeEmptyExteriorTets);
 
         const Vec3* smoothNormals = nullptr;
         if (project && params.volumeContraction > 0.0f && params.volumeContraction < 1.0f)

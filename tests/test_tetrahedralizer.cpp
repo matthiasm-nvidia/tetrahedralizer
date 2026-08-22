@@ -424,6 +424,11 @@ MU_TEST(test_empty_exterior_tets_removed)
             mesh.nodes[mesh.tet_indices[4 * ti + 2]], mesh.nodes[mesh.tet_indices[4 * ti + 3]]));
     }
 
+    params.removeEmptyExteriorTets = false;
+    Tetrahedralizer fullMesh;
+    fullMesh.create(vertices, indices, params);
+    mu_check(fullMesh.numTets() > mesh.numTets());
+
     const MeshStats stats = analyse(mesh);
     mu_assert_int_eq(0, stats.badTets);
     mu_assert_int_eq(0, stats.overusedFaces);

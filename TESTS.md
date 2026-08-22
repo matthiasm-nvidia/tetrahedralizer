@@ -51,7 +51,7 @@ Voxelize two nearby parallel triangles in face-adjacent cells. Additional node I
 
 ### `test_empty_exterior_tets_removed`
 
-Voxelize a single open triangle (no enclosed volume). Empty exterior tets are deleted, so every remaining tet intersects the input triangle.
+Voxelize a single open triangle (no enclosed volume). With `removeEmptyExteriorTets` on (default), empty exterior tets are deleted so every remaining tet intersects the input triangle. Off keeps extra empty tets.
 
 ### `test_subdivision_preserves_manifold_volume`
 

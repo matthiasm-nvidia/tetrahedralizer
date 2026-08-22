@@ -138,9 +138,12 @@ void GpuTetrahedralizer::create(Tetrahedralizer& output, const std::vector<Vec3>
         if (!computeNeighbors(data))
             throw std::runtime_error("Tet mesh has non-manifold faces after tetrahedralization");
 
-        removeEmptyExteriorTets(data);
-        if (!computeNeighbors(data))
-            throw std::runtime_error("Tet mesh has non-manifold faces after empty-tet removal");
+        if (params.removeEmptyExteriorTets)
+        {
+            removeEmptyExteriorTets(data);
+            if (!computeNeighbors(data))
+                throw std::runtime_error("Tet mesh has non-manifold faces after empty-tet removal");
+        }
 
         separateBoundaryFaces(data);
         runOptimization(data, params);

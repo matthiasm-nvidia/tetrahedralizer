@@ -14,6 +14,9 @@ struct TetrahedralizerParams
     // Morphological close radius in voxels before the exterior flood fill.
     // 0 skips closing; larger values seal bigger shell holes.
     int holeCloseRadius = 0;
+    // Drop tets that contain no input geometry and are not on the solid side of
+    // the surface. Off keeps the full five-tet voxel mesh.
+    bool removeEmptyExteriorTets = true;
     // Extra loop iterations after the opt-only phase; each starts with a size-field
     // split. 0 skips adaptivity.
     int numAdaptiveIterations = 0;

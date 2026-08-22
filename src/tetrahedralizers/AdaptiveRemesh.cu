@@ -50,7 +50,7 @@ void sampleSurfaceNodeSizes(TetDeviceData& data, const Vec3* normals, float maxS
 
 } // namespace
 
-void runAdaptiveSplit(TetDeviceData& data, float maxSize)
+void runAdaptiveSplit(TetDeviceData& data, float maxSize, bool removeEmpty)
 {
     if (data.numTets <= 0 || data.numNodes <= 0 || data.meshVertexSizes.size == 0)
         return;
@@ -63,9 +63,12 @@ void runAdaptiveSplit(TetDeviceData& data, float maxSize)
     {
         if (!computeNeighbors(data))
             throw std::runtime_error("Tet mesh has non-manifold faces after adaptive split");
-        removeEmptyExteriorTets(data);
-        if (!computeNeighbors(data))
-            throw std::runtime_error("Tet mesh has non-manifold faces after adaptive empty-tet removal");
+        if (removeEmpty)
+        {
+            removeEmptyExteriorTets(data);
+            if (!computeNeighbors(data))
+                throw std::runtime_error("Tet mesh has non-manifold faces after adaptive empty-tet removal");
+        }
         separateBoundaryFaces(data);
     }
 

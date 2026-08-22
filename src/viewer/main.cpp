@@ -516,6 +516,7 @@ int main()
             if (viewer::imgui_widgets::slider_float("Voxel size", &state.tet_params.voxelSpacing, 0.01f, 0.1f))
                 state.size_field_dirty = true;
             viewer::imgui_widgets::slider_int("Hole close", &state.tet_params.holeCloseRadius, 0, 5);
+            viewer::imgui_widgets::checkbox("Remove empty tets", &state.tet_params.removeEmptyExteriorTets);
             viewer::imgui_widgets::section_separator();
             viewer::imgui_widgets::slider_int("Opt iters", &state.tet_params.numOptimizationIterations, 0, 50);
             if (viewer::imgui_widgets::slider_int("Adaptive iters", &state.tet_params.numAdaptiveIterations, 0, 50))

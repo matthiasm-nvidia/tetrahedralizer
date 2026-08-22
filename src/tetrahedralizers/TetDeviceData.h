@@ -234,7 +234,7 @@ void smoothEdges(TetDeviceData& data, int iterations, float contraction, const V
                  const Vec3* applyNormals = nullptr);
 void separateBoundaryFaces(TetDeviceData& data);
 void runOptimization(TetDeviceData& data, const TetrahedralizerParams& params);
-void runAdaptiveSplit(TetDeviceData& data, float maxSize);
+void runAdaptiveSplit(TetDeviceData& data, float maxSize, bool removeEmpty);
 void uploadMeshFromHost(TetDeviceData& data, const Tetrahedralizer& mesh);
 void downloadMeshToHost(TetDeviceData& data, Tetrahedralizer& mesh);
 
